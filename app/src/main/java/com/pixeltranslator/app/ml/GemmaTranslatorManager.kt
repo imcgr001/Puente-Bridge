@@ -28,29 +28,39 @@ import java.nio.ByteOrder
  */
 class GemmaTranslatorManager(private val context: Context) {
 
+    enum class ModelSize(val filename: String, val label: String) {
+        E2B("gemma-4-E2B-it.litertlm", "Gemma 4 E2B (2.6 GB)"),
+        E4B("gemma-4-E4B-it.litertlm", "Gemma 4 E4B (3.7 GB)")
+    }
+
     companion object {
         private const val TAG = "GemmaTranslator"
-        private const val MODEL_FILENAME = "gemma-4-E2B-it.litertlm"
         private const val MAX_TOKENS = 512
     }
 
     private var engine: Engine? = null
+    var currentModel: ModelSize? = null
+        private set
 
-    suspend fun initialize() = withContext(Dispatchers.IO) {
+    suspend fun initialize(model: ModelSize = ModelSize.E2B) = withContext(Dispatchers.IO) {
+        // Close existing engine if switching models
+        engine?.close()
+        engine = null
+
         val extDir = context.getExternalFilesDir(null)
             ?: throw IllegalStateException("External files dir unavailable")
-        val modelFile = File(extDir, MODEL_FILENAME)
+        val modelFile = File(extDir, model.filename)
 
         if (!modelFile.exists()) {
             throw IllegalStateException(
                 "Model not found at ${modelFile.absolutePath}\n" +
                 "Push it with:\n" +
                 "  adb shell mkdir -p /sdcard/Android/data/${context.packageName}/files/\n" +
-                "  adb push $MODEL_FILENAME /sdcard/Android/data/${context.packageName}/files/"
+                "  adb push ${model.filename} /sdcard/Android/data/${context.packageName}/files/"
             )
         }
 
-        Log.i(TAG, "Loading model from ${modelFile.absolutePath} (${modelFile.length() / 1_000_000} MB)")
+        Log.i(TAG, "Loading ${model.label} from ${modelFile.absolutePath}")
 
         val config = EngineConfig(
             modelPath = modelFile.absolutePath,
@@ -61,8 +71,9 @@ class GemmaTranslatorManager(private val context: Context) {
         val e = Engine(config)
         e.initialize()
         engine = e
+        currentModel = model
 
-        Log.i(TAG, "Model loaded successfully.")
+        Log.i(TAG, "${model.label} loaded successfully.")
     }
 
     data class TranslationResult(

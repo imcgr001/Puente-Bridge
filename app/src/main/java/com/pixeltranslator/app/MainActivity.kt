@@ -8,12 +8,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,10 +47,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pixeltranslator.app.ml.GemmaTranslatorManager.ModelSize
 import com.pixeltranslator.app.ui.ConversationTurn
+import com.pixeltranslator.app.ui.DISCLAIMER_TEXT
 import com.pixeltranslator.app.ui.TranslatorViewModel
 
 class MainActivity : ComponentActivity() {
@@ -90,6 +97,16 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
         }
     }
 
+    if (uiState.showDisclaimer) {
+        DisclaimerScreen(
+            isModelLoaded = uiState.isModelLoaded,
+            status = uiState.status,
+            onPlayAudio = viewModel::playDisclaimer,
+            onBegin = viewModel::dismissDisclaimer
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -103,7 +120,40 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             fontWeight = FontWeight.Bold
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Model selector
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ModelSize.entries.forEach { model ->
+                val selected = uiState.currentModel == model
+                androidx.compose.material3.FilterChip(
+                    selected = selected,
+                    onClick = { viewModel.switchModel(model) },
+                    label = { Text(model.name, fontSize = 13.sp) },
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            androidx.compose.material3.OutlinedButton(onClick = viewModel::showDisclaimer) {
+                Text("Aviso / Disclaimer")
+            }
+            androidx.compose.material3.OutlinedButton(onClick = viewModel::clearConversation) {
+                Text("Clear")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         Text(
             text = uiState.status,
@@ -225,23 +275,113 @@ private fun PushToTalkButton(
 }
 
 @Composable
-private fun ConversationBubble(turn: ConversationTurn) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // Transcription (original speech)
-        if (turn.transcription.isNotEmpty()) {
+private fun DisclaimerScreen(
+    isModelLoaded: Boolean,
+    status: String,
+    onPlayAudio: () -> Unit,
+    onBegin: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "AI Translator",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Aviso / Disclaimer",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            SelectionContainer {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = DISCLAIMER_TEXT,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontSize = 17.sp,
+                        lineHeight = 26.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        if (!isModelLoaded) {
             Text(
-                text = turn.transcription,
+                text = status,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
-        // Translation (highlighted)
-        Text(
-            text = turn.translation,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 18.sp
-        )
+
+        // Play disclaimer aloud in Spanish
+        androidx.compose.material3.OutlinedButton(
+            onClick = onPlayAudio,
+            enabled = isModelLoaded
+        ) {
+            Text("Escuchar en voz alta / Listen aloud")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Begin conversation
+        androidx.compose.material3.Button(
+            onClick = onBegin,
+            enabled = isModelLoaded
+        ) {
+            Text("Comenzar / Begin")
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun ConversationBubble(turn: ConversationTurn) {
+    SelectionContainer {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Transcription (original speech)
+            if (turn.transcription.isNotEmpty()) {
+                Text(
+                    text = turn.transcription,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            // Translation (highlighted)
+            Text(
+                text = turn.translation,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp
+            )
+        }
     }
 }
