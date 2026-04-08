@@ -1,0 +1,19 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.ap_
+*.aab
+
+# Large model files — download separately, don't commit
+app/src/main/assets/*.onnx
+app/src/main/assets/*.bin
+app/src/main/assets/*.litertlm
+app/src/main/assets/*.task
