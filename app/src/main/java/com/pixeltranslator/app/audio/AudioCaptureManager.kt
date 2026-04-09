@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -12,12 +15,15 @@ import java.io.ByteArrayOutputStream
 class AudioCaptureManager {
 
     companion object {
+        private const val TAG = "AudioCapture"
         const val SAMPLE_RATE = 16_000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     }
 
     private var recorder: AudioRecord? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
 
     private val minBufferSize = AudioRecord.getMinBufferSize(
         SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
@@ -34,6 +40,29 @@ class AudioCaptureManager {
         )
         record.startRecording()
         recorder = record
+
+        val sessionId = record.audioSessionId
+
+        // Attach hardware noise suppression if available
+        if (NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = NoiseSuppressor.create(sessionId)?.also {
+                it.enabled = true
+                Log.i(TAG, "NoiseSuppressor enabled")
+            }
+        } else {
+            Log.i(TAG, "NoiseSuppressor not available on this device")
+        }
+
+        // Attach hardware echo cancellation if available —
+        // suppresses TTS playback from bleeding back into the mic
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(sessionId)?.also {
+                it.enabled = true
+                Log.i(TAG, "AcousticEchoCanceler enabled")
+            }
+        } else {
+            Log.i(TAG, "AcousticEchoCanceler not available on this device")
+        }
     }
 
     /**
@@ -56,6 +85,10 @@ class AudioCaptureManager {
     }
 
     fun stopRecording() {
+        noiseSuppressor?.release()
+        noiseSuppressor = null
+        echoCanceler?.release()
+        echoCanceler = null
         recorder?.apply {
             stop()
             release()
