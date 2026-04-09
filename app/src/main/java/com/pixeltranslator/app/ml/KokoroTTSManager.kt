@@ -1,6 +1,10 @@
 package com.pixeltranslator.app.ml
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -13,9 +17,8 @@ import kotlin.coroutines.resume
 /**
  * TTS manager using Android's built-in TextToSpeech engine.
  *
- * Supports English and Spanish with proper pronunciation out of the box.
- * Named KokoroTTSManager to keep the existing wiring — can be swapped
- * back to ONNX Kokoro once espeak-ng is bundled for Android.
+ * Requests audio focus before speaking so notifications and other
+ * sounds don't interrupt the translation output.
  */
 class KokoroTTSManager(private val context: Context) {
 
@@ -25,6 +28,8 @@ class KokoroTTSManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
     private var initialized = false
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var focusRequest: AudioFocusRequest? = null
 
     suspend fun initialize() = suspendCancellableCoroutine { cont ->
         tts = TextToSpeech(context) { status ->
@@ -46,16 +51,43 @@ class KokoroTTSManager(private val context: Context) {
         engine.language = locale
         engine.setSpeechRate(speed)
 
+        // Request audio focus to prevent notifications from interrupting
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            .setAudioAttributes(attrs)
+            .setWillPauseWhenDucked(false)
+            .build()
+        focusRequest = request
+        audioManager.requestAudioFocus(request)
+
+        // Set the same audio attributes on TTS
+        engine.setAudioAttributes(attrs)
+
         withContext(Dispatchers.IO) {
             suspendCancellableCoroutine { cont ->
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { cont.resume(Unit) }
-                    override fun onError(utteranceId: String?) { cont.resume(Unit) }
+                    override fun onDone(utteranceId: String?) {
+                        releaseAudioFocus()
+                        cont.resume(Unit)
+                    }
+                    override fun onError(utteranceId: String?) {
+                        releaseAudioFocus()
+                        cont.resume(Unit)
+                    }
                 })
                 engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "translate_tts")
             }
         }
+    }
+
+    private fun releaseAudioFocus() {
+        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        focusRequest = null
     }
 
     fun close() {
@@ -63,5 +95,6 @@ class KokoroTTSManager(private val context: Context) {
         tts?.shutdown()
         tts = null
         initialized = false
+        releaseAudioFocus()
     }
 }
