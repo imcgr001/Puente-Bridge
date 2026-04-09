@@ -32,14 +32,14 @@ const val DISCLAIMER_TEXT =
     "Esta es una herramienta de traducci\u00f3n con inteligencia artificial. " +
     "Las traducciones pueden contener errores. Si tiene alguna inquietud, " +
     "por favor h\u00e1gala saber y se le proporcionar\u00e1 un int\u00e9rprete humano.\n\n" +
-    "C\u00f3mo funciona la conversaci\u00f3n: su m\u00e9dico hablar\u00e1 y luego la " +
-    "herramienta traducir\u00e1 en voz alta. Cuando est\u00e9n listos para que " +
-    "usted hable, le apuntar\u00e1n con el tel\u00e9fono y podr\u00e1 hablar hasta " +
-    "que termine. Intente ser breve y conciso.\n\n" +
+    "C\u00f3mo funciona la conversaci\u00f3n: la otra persona hablar\u00e1 y luego " +
+    "la herramienta traducir\u00e1 en voz alta. Cuando est\u00e9n listos para " +
+    "que usted hable, le apuntar\u00e1n con el tel\u00e9fono y podr\u00e1 hablar " +
+    "hasta que termine. Intente ser breve y conciso.\n\n" +
     "Si en alg\u00fan momento desea un int\u00e9rprete humano, simplemente " +
     "d\u00edgalo cuando sea su turno para hablar.\n\n" +
     "Nada de esta conversaci\u00f3n se transmite por internet. Todo se " +
-    "realiza en el tel\u00e9fono o dispositivo en la habitaci\u00f3n. Su voz y " +
+    "realiza en el tel\u00e9fono o dispositivo presente. Su voz y " +
     "esta conversaci\u00f3n nunca se graban ni se almacenan. Se eliminan " +
     "de inmediato."
 

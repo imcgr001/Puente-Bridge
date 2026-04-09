@@ -1,4 +1,4 @@
-# Puente: Offline Real-Time Speech-to-Speech Translation with Gemma 4
+# Puente-Bridge: Offline Real-Time Speech-to-Speech Translation with Gemma 4
 
 ## Gemma 4 Good Hackathon Submission | Health & Sciences + Digital Equity
 
@@ -6,11 +6,11 @@
 
 ## Summary
 
-Puente ("bridge" in Spanish) is a fully on-device, real-time English-Spanish speech-to-speech translator. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech recognition and translation via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Text-to-speech output uses Android's native TTS engine with language-appropriate voice selection.
+Puente-Bridge ("bridge" in Spanish) is a fully on-device, real-time English-Spanish speech-to-speech translator. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech recognition and translation via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Text-to-speech output uses Android's native TTS engine with language-appropriate voice selection.
 
 **No data leaves the device.** All speech processing, transcription, translation, and audio synthesis occur entirely on the phone. No audio is recorded, stored, or transmitted over the internet. The app requires no internet connection to function.
 
-Puente is built for anyone who needs to communicate across the English-Spanish language barrier -- in places where internet is unavailable, privacy matters, or professional interpretation services are not immediately accessible.
+Puente-Bridge is built for anyone who needs to communicate across the English-Spanish language barrier -- in places where internet is unavailable, privacy matters, or professional interpretation services are not immediately accessible.
 
 ---
 
@@ -26,7 +26,7 @@ Existing translation tools overwhelmingly require cloud connectivity. Google Tra
 
 3. **Cost and access barriers.** Professional interpretation services charge per-minute fees. Many of the people and communities who most need translation are least able to afford it.
 
-Puente eliminates all three problems by running entirely on a single phone, with no internet required, no data transmitted, and no ongoing cost.
+Puente-Bridge eliminates all three problems by running entirely on a single phone, with no internet required, no data transmitted, and no ongoing cost.
 
 ---
 
@@ -48,7 +48,7 @@ Puente eliminates all three problems by running entirely on a single phone, with
 
 ### Healthcare (With Important Caveats)
 
-Puente has a potential application in healthcare settings as a supplementary communication tool. The app includes a built-in Spanish-language disclaimer designed for clinical use that informs patients the tool is AI-powered, may contain errors, and that a human interpreter is available on request.
+Puente-Bridge has a potential application in healthcare settings as a supplementary communication tool. The app includes a built-in Spanish-language disclaimer designed for clinical use that informs patients the tool is AI-powered, may contain errors, and that a human interpreter is available on request.
 
 However, **healthcare use of machine translation is subject to specific federal regulations**, and the following section discusses the regulatory landscape for informational purposes only.
 
@@ -88,9 +88,9 @@ The OCR Dear Colleague Letter (pp. 4) clarifies that when machine translation is
 | Supplementing communication while awaiting an interpreter | Surgical or treatment consent |
 | Non-critical administrative communication | Legal notices, appeals, grievance rights |
 
-### How Puente's Design Addresses Regulatory Concerns
+### How Puente-Bridges's Design Addresses Regulatory Concerns
 
-While we cannot determine compliance for any specific use case, Puente's architecture addresses several concerns raised in the regulatory framework:
+While we cannot determine compliance for any specific use case, Puente-Bridge's architecture addresses several concerns raised in the regulatory framework:
 
 - **Privacy (92.201(b)):** All processing is on-device. No patient data, audio, or text is transmitted, recorded, or stored. This eliminates the HIPAA exposure risk that the OCR has flagged with "consumer-grade machine translation tools."
 - **Error disclosure (OCR DCL pp. 4):** The built-in disclaimer warns patients in Spanish that translations may contain errors.
@@ -139,7 +139,7 @@ Microphone (16kHz/16-bit/mono PCM)
 
 ### Key Design Decisions
 
-**Two-Step Translation in a Single Conversation Session.** Rather than asking Gemma to transcribe and translate in one prompt (which produced unreliable results), Puente sends two sequential messages within the same `Conversation` session:
+**Two-Step Translation in a Single Conversation Session.** Rather than asking Gemma to transcribe and translate in one prompt (which produced unreliable results), Puente-Bridge sends two sequential messages within the same `Conversation` session:
 1. "Transcribe this speech exactly as spoken."
 2. "Translate the following to [Spanish/English]."
 
@@ -155,7 +155,7 @@ This separation ensures the model never skips the translation step and allows th
 
 ## Gemma 4 Model Usage
 
-Puente leverages Gemma 4's **multimodal audio understanding** -- a key capability of the Gemma 4 architecture. The model processes raw audio input natively through `Content.AudioBytes`, eliminating the need for a separate ASR pipeline. This means:
+Puente-Bridge leverages Gemma 4's **multimodal audio understanding** -- a key capability of the Gemma 4 architecture. The model processes raw audio input natively through `Content.AudioBytes`, eliminating the need for a separate ASR pipeline. This means:
 
 - **Single model** handles both speech recognition and translation
 - **Native audio encoder** in Gemma 4 processes 16kHz PCM audio directly
@@ -208,13 +208,13 @@ Cloud translation services already exist. What they cannot do:
 - Function in airplane mode, in a basement, in a rural area with no cell signal, or in a disaster zone where infrastructure is down
 - Operate at zero marginal cost per conversation
 
-Puente can do all of these things because the entire pipeline -- from microphone to speaker -- runs on a single phone.
+Puente-Bridge can do all of these things because the entire pipeline -- from microphone to speaker -- runs on a single phone.
 
 ---
 
 ## Limitations and Responsible Use
 
-Puente is an AI translation tool. It will make mistakes.
+Puente-Bridge is an AI translation tool. It will make mistakes.
 
 - Translation quality depends on audio clarity, ambient noise, and speech patterns
 - Regional dialects, slang, and technical vocabulary may not always translate accurately
