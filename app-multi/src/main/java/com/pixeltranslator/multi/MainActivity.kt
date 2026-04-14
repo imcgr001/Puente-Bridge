@@ -1,4 +1,4 @@
-package com.pixeltranslator.app
+package com.pixeltranslator.multi
 
 import android.Manifest
 import android.content.Intent
@@ -6,16 +6,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -32,13 +29,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,18 +58,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.core.content.ContextCompat
-import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.pixeltranslator.app.ml.GemmaTranslatorManager.ModelSize
-import com.pixeltranslator.app.ui.ConversationTurn
-import com.pixeltranslator.app.ui.DISCLAIMER_TEXT
-import com.pixeltranslator.app.ui.TranslatorViewModel
+import com.pixeltranslator.multi.ml.GemmaTranslatorManager.ModelSize
+import com.pixeltranslator.multi.ui.ConversationTurn
+import com.pixeltranslator.multi.ui.Language
+import com.pixeltranslator.multi.ui.TranslatorViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,8 +110,8 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
         }
     }
 
-    // Re-check all-files-access each time the app resumes (user may have
-    // toggled it in Settings and come back).
+    // Re-check all-files-access each time the app resumes so returning from
+    // the Settings page kicks the model load without a manual button tap.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -135,21 +139,11 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
         return
     }
 
-    if (uiState.showDisclaimer) {
-        DisclaimerScreen(
-            isModelLoaded = uiState.isModelLoaded,
-            status = uiState.status,
-            onPlayAudio = viewModel::playDisclaimer,
-            onBegin = viewModel::dismissDisclaimer
-        )
-        return
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .systemBarsPadding()
-            .padding(24.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -158,18 +152,16 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             fontWeight = FontWeight.Bold
         )
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Model selector
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.Center
         ) {
             ModelSize.entries.forEach { model ->
-                val selected = uiState.currentModel == model
-                androidx.compose.material3.FilterChip(
-                    selected = selected,
+                FilterChip(
+                    selected = uiState.currentModel == model,
                     onClick = { viewModel.switchModel(model) },
                     label = { Text(model.name, fontSize = 13.sp) },
                     modifier = Modifier.padding(horizontal = 4.dp)
@@ -177,16 +169,37 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
+        // Language pair picker — app translates between these two, flipping
+        // direction based on which one the speaker just used.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            androidx.compose.material3.OutlinedButton(onClick = viewModel::showDisclaimer) {
-                Text("Aviso / Disclaimer")
-            }
-            androidx.compose.material3.OutlinedButton(onClick = viewModel::clearConversation) {
+            LanguageDropdown(
+                label = "Language A",
+                current = uiState.languageA,
+                disabled = uiState.languageB,
+                ttsAvailable = uiState.ttsAvailableForA,
+                onSelect = viewModel::setLanguageA
+            )
+            LanguageDropdown(
+                label = "Language B",
+                current = uiState.languageB,
+                disabled = uiState.languageA,
+                ttsAvailable = uiState.ttsAvailableForB,
+                onSelect = viewModel::setLanguageB
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            OutlinedButton(onClick = viewModel::clearConversation) {
                 Text("Clear")
             }
         }
@@ -199,7 +212,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         Card(
             modifier = Modifier
@@ -210,7 +223,6 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             )
         ) {
             val scrollState = rememberScrollState()
-            // Auto-scroll to bottom when new turns arrive
             LaunchedEffect(uiState.turns.size) {
                 scrollState.animateScrollTo(scrollState.maxValue)
             }
@@ -222,7 +234,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             ) {
                 if (uiState.turns.isEmpty()) {
                     Text(
-                        text = "Speak English or Spanish.\nTranscription and translation will appear here.",
+                        text = "Speak in ${uiState.languageA.displayName} or ${uiState.languageB.displayName}.\nThe app will translate into whichever one you're not using.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -239,7 +251,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         PushToTalkButton(
             isRecording = uiState.isRecording,
@@ -248,7 +260,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             onPressEnd = viewModel::onPushToTalkReleased
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
             text = when {
@@ -261,7 +273,57 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun LanguageDropdown(
+    label: String,
+    current: Language,
+    disabled: Language,
+    ttsAvailable: Boolean,
+    onSelect: (Language) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Box {
+            OutlinedButton(onClick = { expanded = true }) {
+                Text("${current.displayName}", fontSize = 13.sp)
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                Language.entries.forEach { lang ->
+                    DropdownMenuItem(
+                        text = {
+                            val suffix = if (lang == disabled) "  (already in use)" else ""
+                            Text("${lang.displayName}  —  ${lang.nativeName}$suffix")
+                        },
+                        enabled = lang != disabled,
+                        onClick = {
+                            onSelect(lang)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+        if (!ttsAvailable) {
+            Text(
+                text = "no voice",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
     }
 }
 
@@ -313,98 +375,17 @@ private fun PushToTalkButton(
 }
 
 @Composable
-private fun DisclaimerScreen(
-    isModelLoaded: Boolean,
-    status: String,
-    onPlayAudio: () -> Unit,
-    onBegin: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "AI Translator",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "Aviso / Disclaimer",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            SelectionContainer {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(20.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = DISCLAIMER_TEXT,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontSize = 17.sp,
-                        lineHeight = 26.sp
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        if (!isModelLoaded) {
-            Text(
-                text = status,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        // Play disclaimer aloud in Spanish
-        androidx.compose.material3.OutlinedButton(
-            onClick = onPlayAudio,
-            enabled = isModelLoaded
-        ) {
-            Text("Escuchar en voz alta / Listen aloud")
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Begin conversation
-        androidx.compose.material3.Button(
-            onClick = onBegin,
-            enabled = isModelLoaded
-        ) {
-            Text("Comenzar / Begin")
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-    }
-}
-
-@Composable
 private fun ConversationBubble(turn: ConversationTurn) {
     SelectionContainer {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Transcription (original speech)
+            val sourceLabel = turn.sourceLanguage?.let { "${it.displayName} → ${turn.targetLanguage.displayName}" }
+                ?: "(unknown) → ${turn.targetLanguage.displayName}"
+            Text(
+                text = sourceLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(2.dp))
             if (turn.transcription.isNotEmpty()) {
                 Text(
                     text = turn.transcription,
@@ -413,13 +394,19 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
             }
-            // Translation (highlighted)
             Text(
                 text = turn.translation,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 18.sp
             )
+            if (!turn.spokenAloud) {
+                Text(
+                    text = "(text only — no TTS voice installed)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -441,7 +428,7 @@ private fun StorageAccessScreen(onGrant: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = "This app reads Gemma model weights from /sdcard/Download/litertlm-models/ so they can be shared with other on-device AI apps instead of duplicating multi-GB files. Android requires a one-time toggle for that access.",
+            text = "This app reads Gemma model weights from /sdcard/Download/litertlm-models/ so they can be shared with the bilingual translator app instead of duplicating multi-GB files. Android requires a one-time toggle for that access.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center
         )

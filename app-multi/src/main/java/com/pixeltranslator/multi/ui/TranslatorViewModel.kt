@@ -1,14 +1,15 @@
-package com.pixeltranslator.app.ui
+package com.pixeltranslator.multi.ui
 
 import android.app.Application
+import android.content.Context
 import android.os.Build
 import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.pixeltranslator.app.audio.AudioCaptureManager
-import com.pixeltranslator.app.ml.GemmaTranslatorManager
-import com.pixeltranslator.app.ml.GemmaTranslatorManager.ModelSize
-import com.pixeltranslator.app.ml.KokoroTTSManager
+import com.pixeltranslator.multi.audio.AudioCaptureManager
+import com.pixeltranslator.multi.ml.GemmaTranslatorManager
+import com.pixeltranslator.multi.ml.GemmaTranslatorManager.ModelSize
+import com.pixeltranslator.multi.ml.TtsManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,41 +19,52 @@ import kotlinx.coroutines.launch
 
 data class ConversationTurn(
     val transcription: String,
-    val translation: String
+    val translation: String,
+    val sourceLanguage: Language?,
+    val targetLanguage: Language,
+    val spokenAloud: Boolean  // false → TTS voice wasn't available; translation shown as text only
 )
 
+/**
+ * Bilingual conversation config. Per turn, the target is whichever of the two
+ * is NOT the detected source; if detection fails or returns a language that is
+ * neither [languageA] nor [languageB], we default to translating into
+ * [languageA]. The two languages can't be equal.
+ */
 data class TranslatorUiState(
     val status: String = "Initializing...",
     val turns: List<ConversationTurn> = emptyList(),
     val isRecording: Boolean = false,
     val isModelLoaded: Boolean = false,
-    val showDisclaimer: Boolean = false,
     val currentModel: ModelSize = ModelSize.E2B,
+    val languageA: Language = Language.ENGLISH,
+    val languageB: Language = Language.SPANISH,
+    val ttsAvailableForA: Boolean = true,
+    val ttsAvailableForB: Boolean = true,
     val needsStoragePermission: Boolean = false
 )
 
-const val DISCLAIMER_TEXT =
-    "Esta es una herramienta de traducci\u00f3n con inteligencia artificial. " +
-    "Las traducciones pueden contener errores. Si tiene alguna inquietud, " +
-    "por favor h\u00e1gala saber y se le proporcionar\u00e1 un int\u00e9rprete humano.\n\n" +
-    "C\u00f3mo funciona la conversaci\u00f3n: la otra persona hablar\u00e1 y luego " +
-    "la herramienta traducir\u00e1 en voz alta. Cuando est\u00e9n listos para " +
-    "que usted hable, le apuntar\u00e1n con el tel\u00e9fono y podr\u00e1 hablar " +
-    "hasta que termine. Intente ser breve y conciso.\n\n" +
-    "Si en alg\u00fan momento desea un int\u00e9rprete humano, simplemente " +
-    "d\u00edgalo cuando sea su turno para hablar.\n\n" +
-    "Nada de esta conversaci\u00f3n se transmite por internet. Todo se " +
-    "realiza en el tel\u00e9fono o dispositivo presente. Su voz y " +
-    "esta conversaci\u00f3n nunca se graban ni se almacenan. Se eliminan " +
-    "de inmediato."
-
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        private const val PREFS = "multi_translator_prefs"
+        private const val KEY_LANG_A = "language_a_code"
+        private const val KEY_LANG_B = "language_b_code"
+    }
 
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
-    private val kokoro = KokoroTTSManager(application)
+    private val tts = TtsManager(application)
+    private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private val _uiState = MutableStateFlow(TranslatorUiState())
+    private val _uiState = MutableStateFlow(
+        run {
+            val a = Language.fromCode(prefs.getString(KEY_LANG_A, null)) ?: Language.ENGLISH
+            val b = Language.fromCode(prefs.getString(KEY_LANG_B, null))
+                ?: if (a != Language.SPANISH) Language.SPANISH else Language.FRENCH
+            TranslatorUiState(languageA = a, languageB = b)
+        }
+    )
     val uiState: StateFlow<TranslatorUiState> = _uiState.asStateFlow()
 
     private var recordingJob: Job? = null
@@ -91,7 +103,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update { it.copy(status = "Loading models...") }
             try {
                 gemma.initialize()
-                kokoro.initialize()
+                tts.initialize()
+                refreshTtsAvailability()
                 _uiState.update { it.copy(status = "Ready", isModelLoaded = true) }
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Model load failed: ${e.message}") }
@@ -107,20 +120,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         else
             true
 
-    fun showDisclaimer() {
-        _uiState.update { it.copy(showDisclaimer = true) }
-    }
-
-    fun playDisclaimer() {
-        viewModelScope.launch {
-            kokoro.speak(DISCLAIMER_TEXT, lang = "es")
-        }
-    }
-
-    fun dismissDisclaimer() {
-        _uiState.update { it.copy(showDisclaimer = false) }
-    }
-
     fun clearConversation() {
         _uiState.update { it.copy(turns = emptyList()) }
     }
@@ -135,6 +134,41 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Error: ${e.message}") }
             }
+        }
+    }
+
+    fun setLanguageA(language: Language) {
+        val s = _uiState.value
+        if (language == s.languageA) return
+        // If the new A collides with B, swap B out to the previous A.
+        val newB = if (language == s.languageB) s.languageA else s.languageB
+        prefs.edit()
+            .putString(KEY_LANG_A, language.code)
+            .putString(KEY_LANG_B, newB.code)
+            .apply()
+        _uiState.update { it.copy(languageA = language, languageB = newB) }
+        refreshTtsAvailability()
+    }
+
+    fun setLanguageB(language: Language) {
+        val s = _uiState.value
+        if (language == s.languageB) return
+        val newA = if (language == s.languageA) s.languageB else s.languageA
+        prefs.edit()
+            .putString(KEY_LANG_A, newA.code)
+            .putString(KEY_LANG_B, language.code)
+            .apply()
+        _uiState.update { it.copy(languageA = newA, languageB = language) }
+        refreshTtsAvailability()
+    }
+
+    private fun refreshTtsAvailability() {
+        val s = _uiState.value
+        _uiState.update {
+            it.copy(
+                ttsAvailableForA = tts.isAvailable(s.languageA.locale),
+                ttsAvailableForB = tts.isAvailable(s.languageB.locale)
+            )
         }
     }
 
@@ -160,22 +194,38 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update { it.copy(isRecording = false, status = "Translating...") }
 
             try {
-                val result = gemma.translateSpeech(audio) { /* partial results */ }
+                // Transcribe first (detects source), then pick the target as
+                // "whichever of A/B is NOT the source". If detection lands
+                // outside the pair, default to A.
+                val s = _uiState.value
+                val (source, transcription) = gemma.transcribeAndDetect(
+                    audio,
+                    candidateA = s.languageA,
+                    candidateB = s.languageB
+                )
+                val target = if (source == s.languageA) s.languageB else s.languageA
+
+                val translation = gemma.translate(transcription, source, target)
+                val spokenAloud = tts.isAvailable(target.locale)
 
                 val turn = ConversationTurn(
-                    transcription = result.transcription,
-                    translation = result.translation
+                    transcription = transcription,
+                    translation = translation,
+                    sourceLanguage = source,
+                    targetLanguage = target,
+                    spokenAloud = spokenAloud
                 )
                 _uiState.update {
                     it.copy(
                         turns = it.turns + turn,
-                        status = "Speaking..."
+                        status = if (spokenAloud) "Speaking..." else "Ready (no voice installed)"
                     )
                 }
 
-                // TTS the translation
-                kokoro.speak(result.translation, lang = result.targetLanguage)
-                _uiState.update { it.copy(status = "Ready") }
+                if (spokenAloud) {
+                    tts.speak(translation, target.locale)
+                    _uiState.update { it.copy(status = "Ready") }
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Error: ${e.message}") }
             }
@@ -185,6 +235,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         gemma.close()
-        kokoro.close()
+        tts.close()
     }
 }

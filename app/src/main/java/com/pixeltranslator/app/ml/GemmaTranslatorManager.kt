@@ -1,6 +1,7 @@
 package com.pixeltranslator.app.ml
 
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -37,6 +38,17 @@ class GemmaTranslatorManager(private val context: Context) {
     companion object {
         private const val TAG = "GemmaTranslator"
         private const val MAX_TOKENS = 1536
+        /**
+         * Shared model directory used by both this app and app-multi so they
+         * don't each need their own multi-GB copy of the weights. Requires
+         * MANAGE_EXTERNAL_STORAGE — other apps' `Android/data/` dirs are
+         * inaccessible even with that permission, so we keep models outside
+         * any app-private sandbox.
+         */
+        val SHARED_MODEL_DIR: File = File(
+            Environment.getExternalStorageDirectory(),
+            "Download/litertlm-models"
+        )
     }
 
     private var engine: Engine? = null
@@ -63,16 +75,14 @@ class GemmaTranslatorManager(private val context: Context) {
             }
         }
 
-        val extDir = context.getExternalFilesDir(null)
-            ?: throw IllegalStateException("External files dir unavailable")
-        val modelFile = File(extDir, model.filename)
+        val modelFile = File(SHARED_MODEL_DIR, model.filename)
 
         if (!modelFile.exists()) {
             throw IllegalStateException(
                 "Model not found at ${modelFile.absolutePath}\n" +
                 "Push it with:\n" +
-                "  adb shell mkdir -p /sdcard/Android/data/${context.packageName}/files/\n" +
-                "  adb push ${model.filename} /sdcard/Android/data/${context.packageName}/files/"
+                "  adb shell mkdir -p ${SHARED_MODEL_DIR.absolutePath}\n" +
+                "  adb push ${model.filename} ${SHARED_MODEL_DIR.absolutePath}/"
             )
         }
 
