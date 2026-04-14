@@ -8,6 +8,7 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -35,7 +36,7 @@ class GemmaTranslatorManager(private val context: Context) {
 
     companion object {
         private const val TAG = "GemmaTranslator"
-        private const val MAX_TOKENS = 512
+        private const val MAX_TOKENS = 1536
     }
 
     private var engine: Engine? = null
@@ -43,9 +44,24 @@ class GemmaTranslatorManager(private val context: Context) {
         private set
 
     suspend fun initialize(model: ModelSize = ModelSize.E2B) = withContext(Dispatchers.IO) {
-        // Close existing engine if switching models
-        engine?.close()
-        engine = null
+        // Fully drain the prior engine before allocating the new one. Close()
+        // alone isn't enough: GPU/native memory is released via finalizers, and
+        // if the new Engine starts loading weights while the old ones are still
+        // resident, GPU memory gets stomped and the model emits garbage tokens
+        // (`<unused48>` spam, session errors).
+        engine?.let { prior ->
+            prior.close()
+            engine = null
+            // Finalizers run on a separate thread and typically need multiple
+            // gc passes to actually release native memory (promote → finalize →
+            // collect). One pass + 300 ms wasn't enough after sustained E4B
+            // inference — the switch back to E2B would OOM-kill the process.
+            repeat(3) {
+                System.runFinalization()
+                System.gc()
+                delay(200)
+            }
+        }
 
         val extDir = context.getExternalFilesDir(null)
             ?: throw IllegalStateException("External files dir unavailable")
@@ -102,38 +118,49 @@ class GemmaTranslatorManager(private val context: Context) {
             Content.Text("Transcribe this speech exactly as spoken. Output ONLY the transcription, nothing else.")
         )
 
-        val conversation = e.createConversation()
-        try {
-            val transcribeResponse = conversation.sendMessage(transcribeContents)
-            val transcription = transcribeResponse.contents.contents
+        // Transcribe and translate in *separate* Conversations so the audio-token
+        // KV cache is reclaimed before the translate step allocates its own. On
+        // E4B, keeping both in one Conversation left enough undrained native
+        // state to OOM-kill the process after a few turns.
+        val transcribeConv = e.createConversation()
+        val transcription = try {
+            val resp = transcribeConv.sendMessage(transcribeContents)
+            resp.contents.contents
                 .filterIsInstance<Content.Text>()
                 .joinToString("") { it.text }
                 .trim()
-
-            val sourceLang = detectLanguage(transcription)
-            val targetLang = if (sourceLang == "es") "en" else "es"
-            val targetName = if (targetLang == "es") "Spanish" else "English"
-
-            // Step 2: Translate (explicit direction, same conversation)
-            val translateResponse = conversation.sendMessage(
-                "Translate the following to $targetName. Output ONLY the translation, nothing else.\n" +
-                "Text: $transcription"
-            )
-            val translation = translateResponse.contents.contents
-                .filterIsInstance<Content.Text>()
-                .joinToString("") { it.text }
-                .trim()
-
-            val result = TranslationResult(
-                transcription = transcription,
-                translation = translation,
-                targetLanguage = targetLang
-            )
-            onPartialResult(translation)
-            result
         } finally {
-            conversation.close()
+            transcribeConv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
         }
+
+        val sourceLang = detectLanguage(transcription)
+        val targetLang = if (sourceLang == "es") "en" else "es"
+        val targetName = if (targetLang == "es") "Spanish" else "English"
+
+        val translateConv = e.createConversation()
+        val translation = try {
+            val resp = translateConv.sendMessage(buildTranslatePrompt(transcription, targetLang, targetName))
+            resp.contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+                .trim()
+        } finally {
+            translateConv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
+        }
+
+        val result = TranslationResult(
+            transcription = transcription,
+            translation = translation,
+            targetLanguage = targetLang
+        )
+        onPartialResult(translation)
+        result
     }
 
     private fun parseResponse(raw: String): TranslationResult {
@@ -147,6 +174,39 @@ class GemmaTranslatorManager(private val context: Context) {
             translation = translation,
             targetLanguage = detectLanguage(translation)
         )
+    }
+
+    /**
+     * Builds the translate-step prompt. The explicit "only in $targetName"
+     * constraint plus a one-shot example reduces multilingual drift (Gemma 4
+     * is heavily multilingual and will otherwise occasionally substitute a
+     * Hindi / Russian / Portuguese synonym for a word).
+     */
+    private fun buildTranslatePrompt(
+        transcription: String,
+        targetLang: String,
+        targetName: String
+    ): String {
+        val example = if (targetLang == "es") {
+            "Text: \"Let's try once more. This works better, otherwise it will be annoying.\"\n" +
+            "Translation: \"Intentemos una vez más. Esto funciona mejor, de lo contrario será molesto.\""
+        } else {
+            "Text: \"Intentemos una vez más. Esto funciona mejor, de lo contrario será molesto.\"\n" +
+            "Translation: \"Let's try once more. This works better, otherwise it will be annoying.\""
+        }
+        return """
+            You are a professional translator. Translate the text into $targetName.
+            Rules:
+            - Respond in $targetName ONLY. Every word must be a valid $targetName word.
+            - Do not mix in words, characters, or scripts from any other language.
+            - Output ONLY the translation. No explanations, no original text, no labels.
+
+            Example:
+            $example
+
+            Text: "$transcription"
+            Translation:
+        """.trimIndent()
     }
 
     /** Heuristic language detection for English vs Spanish. */
