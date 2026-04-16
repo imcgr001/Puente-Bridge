@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.scale
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -266,10 +268,14 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             ) {
                 if (uiState.turns.isEmpty()) {
                     Text(
-                        text = strings.emptyPlaceholder(
-                            uiState.languageA.nativeName,
-                            uiState.languageB.nativeName
-                        ),
+                        text = if (uiState.isAutoDetect) {
+                            "Auto-detect mode.\nSpeak any supported language — translation will be in English."
+                        } else {
+                            strings.emptyPlaceholder(
+                                uiState.languageA.nativeName,
+                                uiState.languageB.nativeName
+                            )
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -304,7 +310,8 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 current = uiState.languageA,
                 disabled = uiState.languageB,
                 ttsAvailable = uiState.ttsAvailableForA,
-                onSelect = viewModel::setLanguageA
+                onSelect = viewModel::setLanguageA,
+                enabled = !uiState.isAutoDetect
             )
             PushToTalkButton(
                 isRecording = uiState.isRecording,
@@ -319,7 +326,8 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 current = uiState.languageB,
                 disabled = uiState.languageA,
                 ttsAvailable = uiState.ttsAvailableForB,
-                onSelect = viewModel::setLanguageB
+                onSelect = viewModel::setLanguageB,
+                enabled = !uiState.isAutoDetect
             )
         }
 
@@ -336,7 +344,36 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        // Open-set autodetect mode. When on, the mic press ignores the
+        // A/B pair, transcribes with no language hint, scores detection
+        // against all 13 languages, and always translates to English. The
+        // Switch makes the toggle nature unambiguous; the two-line label
+        // tells the user what the mode actually does.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            androidx.compose.material3.Switch(
+                checked = uiState.isAutoDetect,
+                onCheckedChange = viewModel::setAutoDetect,
+                modifier = Modifier.scale(0.75f)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Column {
+                Text(
+                    text = "Auto-detect language",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Translates anything spoken into English",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -364,7 +401,8 @@ private fun LanguageDropdown(
     disabled: Language,
     ttsAvailable: Boolean,
     onSelect: (Language) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -375,6 +413,7 @@ private fun LanguageDropdown(
         Box(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
                 onClick = { expanded = true },
+                enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
                     horizontal = 8.dp, vertical = 4.dp

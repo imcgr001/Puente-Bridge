@@ -166,6 +166,47 @@ class GemmaTranslatorManager(private val context: Context) {
     }
 
     /**
+     * Open-detect transcription: no language hint given to the audio encoder.
+     * Lets Gemma decide what language it heard and produce native-script
+     * output. Used by the experimental auto-detect mode where the user
+     * hasn't pre-committed to a language pair.
+     *
+     * Tradeoff: without anchoring, similar-phoneme languages may be forced
+     * into English-shaped tokens (the original "muy bien → we're being"
+     * failure mode). The reward is honest transcription for any of the 13
+     * supported languages without a pre-selection step.
+     */
+    suspend fun transcribeOpen(pcmAudio: ByteArray): String = withContext(Dispatchers.IO) {
+        val e = engine
+            ?: throw IllegalStateException("Call initialize() before transcribeOpen()")
+
+        val wavBytes = wrapPcmAsWav(pcmAudio, sampleRate = 16000, channels = 1, bitsPerSample = 16)
+        val contents = Contents.of(
+            Content.AudioBytes(wavBytes),
+            Content.Text(
+                "Transcribe exactly what was said, in its original language. " +
+                "Use that language's native script. Output ONLY the transcription. " +
+                "No labels, no translation, no explanation."
+            )
+        )
+        val conv = e.createConversation()
+        val transcription = try {
+            conv.sendMessage(contents).contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+                .trim()
+                .trim('"')
+        } finally {
+            conv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
+        }
+        Log.i(TAG, "TranscribeOpen: $transcription")
+        transcription
+    }
+
+    /**
      * Translates [text] into [target]. [source] is an optional hint; passing
      * null lets Gemma infer the source from the text itself.
      */

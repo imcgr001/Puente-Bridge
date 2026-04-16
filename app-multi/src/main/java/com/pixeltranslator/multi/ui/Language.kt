@@ -233,5 +233,16 @@ enum class Language(
             val scoreB = scoreCandidate(text, b)
             return if (scoreB > scoreA) b else a
         }
+
+        /**
+         * Open-set detection: scores [text] against all 13 supported
+         * languages and returns the highest. Used by the experimental
+         * auto-detect mode where the user hasn't constrained input to a
+         * specific A/B pair. Defaults to ENGLISH on a tie / empty text.
+         */
+        fun detectFromAllLanguages(text: String): Language {
+            if (text.isEmpty()) return ENGLISH
+            return entries.maxByOrNull { scoreCandidate(text, it) } ?: ENGLISH
+        }
     }
 }

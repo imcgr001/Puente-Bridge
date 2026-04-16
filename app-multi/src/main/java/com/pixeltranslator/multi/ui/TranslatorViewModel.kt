@@ -50,7 +50,8 @@ data class TranslatorUiState(
     val ttsAvailableForB: Boolean = true,
     val needsStoragePermission: Boolean = false,
     val showDisclaimer: Boolean = false,
-    val showAbout: Boolean = false
+    val showAbout: Boolean = false,
+    val isAutoDetect: Boolean = false  // experimental: open-set lang detect, always translate to English
 )
 
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
@@ -185,6 +186,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     fun dismissAbout() {
         _uiState.update { it.copy(showAbout = false) }
+    }
+
+    fun setAutoDetect(enabled: Boolean) {
+        _uiState.update { it.copy(isAutoDetect = enabled) }
     }
 
     /**
@@ -351,18 +356,39 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update { it.copy(isRecording = false, status = "Translating...") }
 
             try {
-                // Transcribe first (detects source), then pick the target as
-                // "whichever of A/B is NOT the source". If detection lands
-                // outside the pair, default to A.
                 val s = _uiState.value
-                val (source, transcription) = gemma.transcribeAndDetect(
-                    audio,
-                    candidateA = s.languageA,
-                    candidateB = s.languageB
-                )
-                val target = if (source == s.languageA) s.languageB else s.languageA
 
-                val translation = gemma.translate(transcription, source, target)
+                // Two paths: open auto-detect (experimental — no language hint
+                // to Gemma, score against all 13, always translate to English)
+                // vs. binary A/B-anchored detection (production default).
+                val source: Language
+                val target: Language
+                val transcription: String
+                if (s.isAutoDetect) {
+                    transcription = gemma.transcribeOpen(audio)
+                    source = Language.detectFromAllLanguages(transcription)
+                    target = Language.ENGLISH
+                    // Handoff helper: park the detected source language in B
+                    // (the greyed-out dropdown). When the operator toggles
+                    // auto OFF, the pair is already English ↔ that language,
+                    // ready for an actual back-and-forth conversation.
+                    // Skip if source is just A — no useful pair to set up.
+                    if (source != s.languageA) {
+                        setLanguageB(source)
+                    }
+                } else {
+                    val pair = gemma.transcribeAndDetect(
+                        audio,
+                        candidateA = s.languageA,
+                        candidateB = s.languageB
+                    )
+                    source = pair.first
+                    transcription = pair.second
+                    target = if (source == s.languageA) s.languageB else s.languageA
+                }
+
+                val translation = if (source == target) transcription
+                    else gemma.translate(transcription, source, target)
                 val spokenAloud = tts.isAvailable(target.locale)
 
                 val turn = ConversationTurn(
