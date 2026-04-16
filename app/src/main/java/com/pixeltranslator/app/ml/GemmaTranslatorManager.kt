@@ -64,14 +64,18 @@ class GemmaTranslatorManager(private val context: Context) {
         engine?.let { prior ->
             prior.close()
             engine = null
-            // Finalizers run on a separate thread and typically need multiple
-            // gc passes to actually release native memory (promote → finalize →
-            // collect). One pass + 300 ms wasn't enough after sustained E4B
-            // inference — the switch back to E2B would OOM-kill the process.
-            repeat(3) {
+            // Canonical "make sure finalizers actually run" pattern: first gc
+            // enqueues unreachable objects, runFinalization runs their
+            // finalizers (freeing native memory), second gc collects the
+            // finalizer-cleared referents. Repeat 5× with a 300 ms delay
+            // between cycles — E4B's resident GPU/KV footprint needs roughly
+            // this long to fully release on Pixel 10 Pro before the next
+            // Engine() can allocate without stomping native memory.
+            repeat(5) {
+                System.gc()
                 System.runFinalization()
                 System.gc()
-                delay(200)
+                delay(300)
             }
         }
 

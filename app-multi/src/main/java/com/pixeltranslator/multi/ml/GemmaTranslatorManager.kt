@@ -31,9 +31,24 @@ import java.nio.ByteOrder
  */
 class GemmaTranslatorManager(private val context: Context) {
 
-    enum class ModelSize(val filename: String, val label: String) {
-        E2B("gemma-4-E2B-it.litertlm", "Gemma 4 E2B (2.6 GB)"),
-        E4B("gemma-4-E4B-it.litertlm", "Gemma 4 E4B (3.7 GB)")
+    enum class ModelSize(
+        val filename: String,
+        val label: String,           // technical, used in status messages
+        val friendlyLabel: String,   // user-facing chip label
+        val sizeLabel: String        // GB, shown as subtext under the chip
+    ) {
+        E2B(
+            "gemma-4-E2B-it.litertlm",
+            "Gemma 4 E2B (2.6 GB)",
+            "Faster",
+            "2.6 GB"
+        ),
+        E4B(
+            "gemma-4-E4B-it.litertlm",
+            "Gemma 4 E4B (3.7 GB)",
+            "Higher Accuracy",
+            "3.7 GB"
+        )
     }
 
     companion object {
@@ -62,10 +77,18 @@ class GemmaTranslatorManager(private val context: Context) {
         engine?.let { prior ->
             prior.close()
             engine = null
-            repeat(3) {
+            // Canonical "make sure finalizers actually run" pattern: first gc
+            // enqueues unreachable objects, runFinalization runs their
+            // finalizers (freeing native memory), second gc collects the
+            // finalizer-cleared referents. Repeat 5× with a 300 ms delay
+            // between cycles — E4B's resident GPU/KV footprint needs roughly
+            // this long to fully release on Pixel 10 Pro before the next
+            // Engine() can allocate without stomping native memory.
+            repeat(5) {
+                System.gc()
                 System.runFinalization()
                 System.gc()
-                delay(200)
+                delay(300)
             }
         }
 

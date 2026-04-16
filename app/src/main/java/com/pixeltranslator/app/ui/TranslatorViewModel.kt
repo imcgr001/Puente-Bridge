@@ -1,8 +1,11 @@
 package com.pixeltranslator.app.ui
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pixeltranslator.app.audio.AudioCaptureManager
@@ -10,11 +13,17 @@ import com.pixeltranslator.app.ml.GemmaTranslatorManager
 import com.pixeltranslator.app.ml.GemmaTranslatorManager.ModelSize
 import com.pixeltranslator.app.ml.KokoroTTSManager
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 data class ConversationTurn(
     val transcription: String,
@@ -48,11 +57,29 @@ const val DISCLAIMER_TEXT =
 
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
 
+    companion object {
+        private const val PREFS = "app_translator_prefs"
+        private const val KEY_MODEL = "selected_model"
+    }
+
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
     private val kokoro = KokoroTTSManager(application)
+    private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val pendingTurnsFile = File(application.cacheDir, "pending_turns.json")
 
-    private val _uiState = MutableStateFlow(TranslatorUiState())
+    private val _uiState = MutableStateFlow(
+        run {
+            val savedModel = prefs.getString(KEY_MODEL, null)
+                ?.let { name -> ModelSize.entries.firstOrNull { it.name == name } }
+                ?: ModelSize.E2B
+            val pendingTurns = consumePendingTurns()
+            TranslatorUiState(
+                currentModel = savedModel,
+                turns = pendingTurns
+            )
+        }
+    )
     val uiState: StateFlow<TranslatorUiState> = _uiState.asStateFlow()
 
     private var recordingJob: Job? = null
@@ -90,7 +117,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _uiState.update { it.copy(status = "Loading models...") }
             try {
-                gemma.initialize()
+                gemma.initialize(_uiState.value.currentModel)
                 kokoro.initialize()
                 _uiState.update { it.copy(status = "Ready", isModelLoaded = true) }
             } catch (e: Exception) {
@@ -99,6 +126,26 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 isLoading = false
             }
         }
+    }
+
+    /**
+     * Rejects accidentally-short or near-silent captures. Below either
+     * threshold, Gemma will fabricate plausible-sounding "transcriptions"
+     * drawn from its prompt context.
+     */
+    private fun isAudioMeaningful(pcm: ByteArray): Boolean {
+        if (pcm.size < 9600) return false  // < 0.3 s at 16 kHz/16-bit
+        val buf = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN)
+        var sumSquares = 0.0
+        var count = 0
+        while (buf.remaining() >= 2) {
+            val s = buf.short.toInt()
+            sumSquares += (s * s).toDouble()
+            count++
+        }
+        if (count == 0) return false
+        val rms = Math.sqrt(sumSquares / count)
+        return rms > 200.0
     }
 
     private fun hasAllFilesAccess(): Boolean =
@@ -125,17 +172,80 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(turns = emptyList()) }
     }
 
+    /**
+     * Switches the active model by persisting the choice and restarting the
+     * app process. LiteRT-LM's native GPU/KV allocations aren't reliably
+     * released in-process even after `close()` + aggressive GC, so an
+     * in-session switch from E4B back to E2B reliably native-crashes. Killing
+     * and relaunching lets the OS reclaim everything at the process level.
+     */
     fun switchModel(model: ModelSize) {
         if (model == _uiState.value.currentModel) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isModelLoaded = false, status = "Loading ${model.label}...") }
-            try {
-                gemma.initialize(model)
-                _uiState.update { it.copy(isModelLoaded = true, status = "Ready", currentModel = model) }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(status = "Error: ${e.message}") }
-            }
+        if (isLoading) return
+        isLoading = true
+
+        prefs.edit().putString(KEY_MODEL, model.name).commit()
+        saveTurnsForRestart(_uiState.value.turns)
+
+        _uiState.update {
+            it.copy(
+                currentModel = model,
+                isModelLoaded = false,
+                status = "Switching to ${model.label}…"
+            )
         }
+
+        viewModelScope.launch {
+            delay(400)
+            val app = getApplication<Application>()
+            val intent = app.packageManager.getLaunchIntentForPackage(app.packageName)
+            intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            if (intent != null) app.startActivity(intent)
+            Runtime.getRuntime().exit(0)
+        }
+    }
+
+    /**
+     * Caches the current conversation to survive the model-switch process
+     * restart. Written only in [switchModel]; consumed and deleted on the
+     * next launch. Normal app close / OS kill still wipe history — this is
+     * scoped to intentional restarts only.
+     */
+    private fun saveTurnsForRestart(turns: List<ConversationTurn>) {
+        try {
+            val arr = JSONArray()
+            for (t in turns) {
+                arr.put(JSONObject().apply {
+                    put("transcription", t.transcription)
+                    put("translation", t.translation)
+                })
+            }
+            pendingTurnsFile.writeText(arr.toString())
+        } catch (e: Exception) {
+            Log.w("TranslatorViewModel", "Failed to persist turns for restart", e)
+        }
+    }
+
+    private fun consumePendingTurns(): List<ConversationTurn> {
+        if (!pendingTurnsFile.exists()) return emptyList()
+        val result = mutableListOf<ConversationTurn>()
+        try {
+            val arr = JSONArray(pendingTurnsFile.readText())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                result.add(
+                    ConversationTurn(
+                        transcription = obj.getString("transcription"),
+                        translation = obj.getString("translation")
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("TranslatorViewModel", "Failed to restore turns after restart", e)
+        } finally {
+            pendingTurnsFile.delete()
+        }
+        return result
     }
 
     fun onPushToTalkPressed() {
@@ -152,7 +262,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             recordingJob?.join()
             val audio = capturedAudio
-            if (audio.isEmpty()) {
+            if (audio.isEmpty() || !isAudioMeaningful(audio)) {
+                // Silently skip — near-silent audio otherwise provokes
+                // Gemma into hallucinating from its prompt context.
                 _uiState.update { it.copy(isRecording = false, status = "Ready") }
                 return@launch
             }

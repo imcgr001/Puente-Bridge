@@ -2,9 +2,16 @@ package com.pixeltranslator.multi.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import androidx.lifecycle.viewModelScope
 import com.pixeltranslator.multi.audio.AudioCaptureManager
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager
@@ -41,28 +48,46 @@ data class TranslatorUiState(
     val languageB: Language = Language.SPANISH,
     val ttsAvailableForA: Boolean = true,
     val ttsAvailableForB: Boolean = true,
-    val needsStoragePermission: Boolean = false
+    val needsStoragePermission: Boolean = false,
+    val showDisclaimer: Boolean = false,
+    val showAbout: Boolean = false
 )
 
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
-        private const val PREFS = "multi_translator_prefs"
+        // v2: invalidated the earlier prefs store after a stale Arabic value
+        // was observed surviving reinstalls via Android's auto-backup. Bump
+        // this suffix whenever we need to force a fresh default pair.
+        private const val PREFS = "multi_translator_prefs_v2"
         private const val KEY_LANG_A = "language_a_code"
         private const val KEY_LANG_B = "language_b_code"
+        private const val KEY_MODEL = "selected_model"
     }
 
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
     private val tts = TtsManager(application)
     private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val pendingTurnsFile = File(application.cacheDir, "pending_turns.json")
 
     private val _uiState = MutableStateFlow(
         run {
             val a = Language.fromCode(prefs.getString(KEY_LANG_A, null)) ?: Language.ENGLISH
             val b = Language.fromCode(prefs.getString(KEY_LANG_B, null))
                 ?: if (a != Language.SPANISH) Language.SPANISH else Language.FRENCH
-            TranslatorUiState(languageA = a, languageB = b)
+            val savedModel = prefs.getString(KEY_MODEL, null)
+                ?.let { name -> ModelSize.entries.firstOrNull { it.name == name } }
+                ?: ModelSize.E2B
+            // Consume any turns saved immediately before a model-switch
+            // restart so the conversation appears to persist across the swap.
+            val pendingTurns = consumePendingTurns()
+            TranslatorUiState(
+                languageA = a,
+                languageB = b,
+                currentModel = savedModel,
+                turns = pendingTurns
+            )
         }
     )
     val uiState: StateFlow<TranslatorUiState> = _uiState.asStateFlow()
@@ -102,7 +127,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _uiState.update { it.copy(status = "Loading models...") }
             try {
-                gemma.initialize()
+                gemma.initialize(_uiState.value.currentModel)
                 tts.initialize()
                 refreshTtsAvailability()
                 _uiState.update { it.copy(status = "Ready", isModelLoaded = true) }
@@ -112,6 +137,28 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 isLoading = false
             }
         }
+    }
+
+    /**
+     * Rejects accidentally-short or near-silent captures. Below either
+     * threshold, Gemma will fabricate plausible-sounding "transcriptions"
+     * drawn from its prompt context (e.g. echoing the "The speaker is
+     * using English/Spanish" framing back as the user's supposed utterance).
+     * Minimum 0.3 s of 16-bit/16 kHz PCM and RMS above 200/32767 (~-44 dB FS).
+     */
+    private fun isAudioMeaningful(pcm: ByteArray): Boolean {
+        if (pcm.size < 9600) return false  // < 0.3 s at 16 kHz/16-bit
+        val buf = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN)
+        var sumSquares = 0.0
+        var count = 0
+        while (buf.remaining() >= 2) {
+            val s = buf.short.toInt()
+            sumSquares += (s * s).toDouble()
+            count++
+        }
+        if (count == 0) return false
+        val rms = Math.sqrt(sumSquares / count)
+        return rms > 200.0
     }
 
     private fun hasAllFilesAccess(): Boolean =
@@ -124,17 +171,124 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(turns = emptyList()) }
     }
 
+    fun showDisclaimer() {
+        _uiState.update { it.copy(showDisclaimer = true) }
+    }
+
+    fun dismissDisclaimer() {
+        _uiState.update { it.copy(showDisclaimer = false) }
+    }
+
+    fun showAbout() {
+        _uiState.update { it.copy(showAbout = true) }
+    }
+
+    fun dismissAbout() {
+        _uiState.update { it.copy(showAbout = false) }
+    }
+
+    /**
+     * Plays the pre-translated disclaimer aloud in [language] using Android
+     * TTS. Used from the disclaimer screen so the other speaker (who may
+     * not read) can hear the usage instructions and privacy promise in
+     * their own language.
+     */
+    fun playDisclaimerAloud(language: Language) {
+        viewModelScope.launch {
+            tts.speak(Disclaimer.textFor(language), language.locale)
+        }
+    }
+
+    /**
+     * Switches the active model by persisting the choice and restarting the
+     * app process. LiteRT-LM's native GPU/KV allocations aren't reliably
+     * released in-process even after `close()` + aggressive GC, so an
+     * in-session switch from E4B back to E2B reliably native-crashes. Killing
+     * and relaunching lets the OS reclaim everything at the process level;
+     * the relaunched app reads [KEY_MODEL] from prefs and cold-loads the new
+     * choice.
+     */
     fun switchModel(model: ModelSize) {
         if (model == _uiState.value.currentModel) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isModelLoaded = false, status = "Loading ${model.label}...") }
-            try {
-                gemma.initialize(model)
-                _uiState.update { it.copy(isModelLoaded = true, status = "Ready", currentModel = model) }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(status = "Error: ${e.message}") }
-            }
+        if (isLoading) return
+        isLoading = true
+
+        // Sync writes — must be durable before we kill the process.
+        prefs.edit().putString(KEY_MODEL, model.name).commit()
+        saveTurnsForRestart(_uiState.value.turns)
+
+        _uiState.update {
+            it.copy(
+                currentModel = model,
+                isModelLoaded = false,
+                status = "Switching to ${model.friendlyLabel}…"
+            )
         }
+
+        viewModelScope.launch {
+            // Brief delay so the user sees the "Switching…" status flash
+            // rather than the screen just disappearing.
+            kotlinx.coroutines.delay(400)
+            val app = getApplication<Application>()
+            val intent = app.packageManager.getLaunchIntentForPackage(app.packageName)
+            intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            if (intent != null) app.startActivity(intent)
+            Runtime.getRuntime().exit(0)
+        }
+    }
+
+    /**
+     * Serializes the current conversation turns to a cache file so the
+     * post-restart process can restore them. Written only immediately before
+     * an intentional model-switch exit — the file is deleted on the next
+     * launch after being consumed, so normal app close / OS kills still wipe
+     * history as the privacy story promises.
+     */
+    private fun saveTurnsForRestart(turns: List<ConversationTurn>) {
+        try {
+            val arr = JSONArray()
+            for (t in turns) {
+                arr.put(JSONObject().apply {
+                    put("transcription", t.transcription)
+                    put("translation", t.translation)
+                    put("src", t.sourceLanguage?.code ?: JSONObject.NULL)
+                    put("tgt", t.targetLanguage.code)
+                    put("spoken", t.spokenAloud)
+                })
+            }
+            pendingTurnsFile.writeText(arr.toString())
+        } catch (e: Exception) {
+            Log.w("TranslatorViewModel", "Failed to persist turns for restart", e)
+        }
+    }
+
+    private fun consumePendingTurns(): List<ConversationTurn> {
+        if (!pendingTurnsFile.exists()) return emptyList()
+        val result = mutableListOf<ConversationTurn>()
+        try {
+            val arr = JSONArray(pendingTurnsFile.readText())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val srcCode = if (obj.isNull("src")) null else obj.getString("src")
+                val tgt = Language.fromCode(obj.getString("tgt")) ?: Language.ENGLISH
+                result.add(
+                    ConversationTurn(
+                        transcription = obj.getString("transcription"),
+                        translation = obj.getString("translation"),
+                        sourceLanguage = Language.fromCode(srcCode),
+                        targetLanguage = tgt,
+                        spokenAloud = obj.getBoolean("spoken")
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("TranslatorViewModel", "Failed to restore turns after restart", e)
+        } finally {
+            // Delete unconditionally — better to lose one restart's history
+            // than to have a stale file quietly persist across sessions.
+            pendingTurnsFile.delete()
+        }
+        return result
     }
 
     fun setLanguageA(language: Language) {
@@ -186,7 +340,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             recordingJob?.join()
             val audio = capturedAudio
-            if (audio.isEmpty()) {
+            if (audio.isEmpty() || !isAudioMeaningful(audio)) {
+                // Silently return to Ready. Passing near-silent audio to Gemma
+                // produces prompt-echo hallucinations like
+                // "English: The speaker is using English."
                 _uiState.update { it.copy(isRecording = false, status = "Ready") }
                 return@launch
             }
