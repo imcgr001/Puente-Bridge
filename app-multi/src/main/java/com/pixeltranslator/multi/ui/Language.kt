@@ -244,5 +244,19 @@ enum class Language(
             if (text.isEmpty()) return ENGLISH
             return entries.maxByOrNull { scoreCandidate(text, it) } ?: ENGLISH
         }
+
+        /**
+         * Same as [detectFromAllLanguages] but also returns the winning
+         * score, which doubles as a confidence signal. A very low score on
+         * non-empty text (e.g. 0 or 2) usually means the input isn't in any
+         * supported language — phonetic transliterations of out-of-set
+         * languages, gibberish, proper nouns alone. Callers can threshold
+         * this and surface a "low confidence" hint.
+         */
+        fun detectFromAllLanguagesWithConfidence(text: String): Pair<Language, Int> {
+            if (text.isEmpty()) return ENGLISH to 0
+            val top = entries.maxByOrNull { scoreCandidate(text, it) } ?: ENGLISH
+            return top to scoreCandidate(text, top)
+        }
     }
 }

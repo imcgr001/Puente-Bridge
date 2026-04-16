@@ -240,11 +240,24 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        Text(
-            text = localizeStatus(uiState.status, strings),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (uiState.isProcessing) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
+            Text(
+                text = localizeStatus(uiState.status, strings),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -315,7 +328,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             )
             PushToTalkButton(
                 isRecording = uiState.isRecording,
-                enabled = hasPermission && uiState.isModelLoaded,
+                enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
                 onPressStart = viewModel::onPushToTalkPressed,
                 onPressEnd = viewModel::onPushToTalkReleased
             )
@@ -542,6 +555,13 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 18.sp
             )
+            if (turn.lowConfidence) {
+                Text(
+                    text = "(low confidence — language may not be supported; output may be inaccurate)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             if (!turn.spokenAloud) {
                 Text(
                     text = "(text only — no TTS voice installed)",

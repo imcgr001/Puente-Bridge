@@ -29,7 +29,8 @@ data class ConversationTurn(
     val translation: String,
     val sourceLanguage: Language?,
     val targetLanguage: Language,
-    val spokenAloud: Boolean  // false → TTS voice wasn't available; translation shown as text only
+    val spokenAloud: Boolean,  // false → TTS voice wasn't available; translation shown as text only
+    val lowConfidence: Boolean = false  // auto-detect mode: text-side detector couldn't confidently identify language
 )
 
 /**
@@ -51,7 +52,8 @@ data class TranslatorUiState(
     val needsStoragePermission: Boolean = false,
     val showDisclaimer: Boolean = false,
     val showAbout: Boolean = false,
-    val isAutoDetect: Boolean = false  // experimental: open-set lang detect, always translate to English
+    val isAutoDetect: Boolean = false,  // experimental: open-set lang detect, always translate to English
+    val isProcessing: Boolean = false   // a turn is in flight (transcribe/translate/TTS); mic button should be disabled
 )
 
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
@@ -353,7 +355,13 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 return@launch
             }
 
-            _uiState.update { it.copy(isRecording = false, status = "Translating...") }
+            _uiState.update {
+                it.copy(
+                    isRecording = false,
+                    isProcessing = true,
+                    status = "Translating..."
+                )
+            }
 
             try {
                 val s = _uiState.value
@@ -364,16 +372,23 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 val source: Language
                 val target: Language
                 val transcription: String
+                var lowConfidence = false
                 if (s.isAutoDetect) {
                     transcription = gemma.transcribeOpen(audio)
-                    source = Language.detectFromAllLanguages(transcription)
+                    val (detected, confidence) = Language.detectFromAllLanguagesWithConfidence(transcription)
+                    source = detected
                     target = Language.ENGLISH
+                    // Threshold of 4 catches transliterated out-of-set languages
+                    // (Farsi spoken → "salam cheghad" with 0 score) and
+                    // undetectable gibberish, without flagging genuine short
+                    // English responses that match 1–2 stopwords.
+                    lowConfidence = confidence < 4
                     // Handoff helper: park the detected source language in B
                     // (the greyed-out dropdown). When the operator toggles
                     // auto OFF, the pair is already English ↔ that language,
                     // ready for an actual back-and-forth conversation.
-                    // Skip if source is just A — no useful pair to set up.
-                    if (source != s.languageA) {
+                    // Skip if source is just A or confidence too low — no useful pair.
+                    if (source != s.languageA && !lowConfidence) {
                         setLanguageB(source)
                     }
                 } else {
@@ -396,21 +411,31 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     translation = translation,
                     sourceLanguage = source,
                     targetLanguage = target,
-                    spokenAloud = spokenAloud
+                    spokenAloud = spokenAloud,
+                    lowConfidence = lowConfidence
                 )
                 _uiState.update {
                     it.copy(
                         turns = it.turns + turn,
-                        status = if (spokenAloud) "Speaking..." else "Ready (no voice installed)"
+                        status = when {
+                            // Auto-detect mode skips TTS: operator is listening
+                            // to the other speaker and doesn't want the app to
+                            // talk back. Translation appears on-screen only.
+                            s.isAutoDetect -> "Ready"
+                            spokenAloud -> "Speaking..."
+                            else -> "Ready (no voice installed)"
+                        }
                     )
                 }
 
-                if (spokenAloud) {
+                if (spokenAloud && !s.isAutoDetect) {
                     tts.speak(translation, target.locale)
                     _uiState.update { it.copy(status = "Ready") }
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Error: ${e.message}") }
+            } finally {
+                _uiState.update { it.copy(isProcessing = false) }
             }
         }
     }
