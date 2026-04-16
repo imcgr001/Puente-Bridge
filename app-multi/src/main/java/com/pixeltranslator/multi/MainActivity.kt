@@ -381,7 +381,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Translates anything spoken into English",
+                    text = "Transcribes and translates anything spoken into English — text only, no speech",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

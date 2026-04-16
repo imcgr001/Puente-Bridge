@@ -366,12 +366,41 @@ Puente-Multi is an AI translation tool. It will make mistakes, and it leaves sig
 
 ### Quality limitations within the supported set
 
-- **Translation quality varies by pair.** English ↔ Spanish / French / German / Portuguese / Italian is generally very strong; pairs involving Japanese, Korean, Chinese, Arabic, or Hindi are typically good but weaker, and quality drops further for non-English pairs between lower-resource languages (e.g., Korean ↔ Arabic).
+Translation quality is not uniform across the thirteen languages, but it's important to be clear about what we know and don't know: **we did not benchmark Gemma 4 E2B/E4B against reference translations for this project.** The expectations below are extrapolated from published multilingual LLM research on models of similar scale (mT5, NLLB, XGLM, earlier Gemma variants, and related work), combined with the well-documented fact that multilingual training corpora skew heavily toward English, Romance languages, and Mandarin. They should be read as *priors about how models like this tend to behave*, not as verified measurements of this specific deployment.
+
+With that caveat, rough expectations:
+
+- **Strongest quality is expected for English and Spanish** — the pair the bilingual predecessor was optimized for and the two languages with the most training-data exposure in public multilingual corpora.
+- **Good-to-usable quality is expected for the other major European languages** (French, German, Portuguese, Italian) and Mandarin Chinese (Simplified), all of which have substantial multilingual training coverage.
+- **Weaker output is expected for Hindi and Vietnamese**, which are typically lower-resource in multilingual LLM training data even among major world languages. Translations will generally convey meaning but may read more mechanically and miss idiomatic register.
+- **Japanese, Korean, Russian, and Arabic fall somewhere in the middle.** Well-represented in training but with structural features (honorific systems, noun declension, Arabic diglossia) that smaller multilingual models historically handle less gracefully. Expect "accurate but stiff" rather than "native-sounding."
+
+None of the above has been validated against reference translations in this codebase. Users deploying the app for anything beyond casual communication should empirically evaluate quality for their specific language pair and use case.
+
+**Language-specific patterns that tend to appear across multilingual models at this scale** (again, priors rather than verified behavior):
+
+- **Chinese:** Simplified-only output (`zh-CN`). Traditional-Chinese-script regions (Taiwan, Hong Kong) may see Simplified characters. Cantonese-spoken input typically transcribes worse than Mandarin because audio training in multilingual models skews Mandarin.
+- **Arabic:** Multilingual models tend to output Modern Standard Arabic (MSA) regardless of regional dialect input. Colloquial Egyptian/Levantine/Maghrebi/Gulf speakers will often receive grammatically-correct-but-stilted MSA back.
+- **Japanese:** Politeness-level systems (です・ます vs plain form) are commonly flattened. Gendered speech particles tend to be neutralized.
+- **Korean:** Honorific levels (해요체, 합니다체, 반말) typically default to mid-formal 해요 regardless of context.
+- **Hindi:** Code-mixing with English ("Hinglish") is a common artifact when the model isn't sure of a term. Formal Hindi vs everyday Hindustani register may blend.
+- **Vietnamese:** Tone marks usually preserve but ambiguous words occasionally get wrong tones. Northern vs Southern regional variants typically aren't distinguished.
+- **German:** Compound-word construction and case agreement can be unreliable on complex sentences.
+- **Portuguese:** Brazilian and European Portuguese are usually not distinguished. Output tends to lean Brazilian.
+
+Across all thirteen, consistent limitations:
+
 - **Regional dialects, slang, and technical vocabulary may not translate accurately.** The model is trained on standardized language data; heavily dialectal speech is noisier.
 - **TTS pronunciation uses the device's installed voice.** Accents and prosody will not capture all regional variations. On devices without a particular language's voice installed, output falls back to on-screen text only.
+- **Proper nouns and named entities** (places, brand names, uncommon surnames) are often transliterated inaccurately or left untranslated in the source script.
+- **Numbers, dates, times, and units** translate reliably in simple sentences but may be garbled in complex utterances (e.g., "the meeting is at quarter past three on the nineteenth" → expect awkward output).
+- **Humor, sarcasm, cultural references, wordplay** do not translate. The output will be technically accurate and completely flat.
 - **High-stakes use cases still need human interpretation.** Medical consent, legal proceedings, surgical instructions, safety-critical communication — this tool is not a substitute for a qualified human interpreter in those contexts.
-- **The paired-mode A/B constraint is by design.** If a speaker uses a third language (say, French when the pair is set to English/Spanish), the app will incorrectly route the turn. Auto-detect mode addresses this, but introduces its own failure modes (see below).
-- **Auto-detect mode has real failure modes.** Without language anchoring, the audio encoder can occasionally force foreign phonemes into English-shaped tokens. Detection only works for the supported 13 — speech in any other language will be misclassified and translated from a wrong assumption.
+- **The paired-mode A/B constraint is by design.** If a speaker uses a third language (say, French when the pair is set to English/Spanish), the app will incorrectly route the turn. Auto-detect mode addresses this, but introduces its own failure modes.
+- **Auto-detect mode has real failure modes.** Without language anchoring, the audio encoder can occasionally force foreign phonemes into English-shaped tokens. Detection only works for the supported thirteen — speech in any other language will be misclassified. The app surfaces a low-confidence indicator on the conversation bubble when this is suspected.
+- **E2B vs E4B matters.** The "Faster" (E2B) model is noticeably weaker than "Higher Accuracy" (E4B) on lower-tier languages. If translation quality for Japanese, Korean, Hindi, or Arabic feels wrong, switching to E4B often helps — at the cost of 1.5× latency and significantly more memory.
+
+The overall honest framing: this tool is an offline communication aid, not a professional translation system. It lets people who don't share a language get an *approximate* understanding of each other in contexts where the alternative is no communication at all. For the contexts where approximate isn't good enough (surgical consent, legal testimony, diplomatic negotiation), the regulations and professional norms that require human interpreters exist for good reasons — and this tool doesn't change that.
 
 ### Languages NOT supported, and why
 
