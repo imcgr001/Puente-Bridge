@@ -41,12 +41,15 @@ class ExternalLanguageId {
     suspend fun identify(text: String): Result {
         if (text.isBlank()) return Result.Undetermined
         return try {
-            val code = client.identifyLanguage(text).await()
-            Log.i(TAG, "Identified '$text' -> $code")
-            when {
-                code == "und" -> Result.Undetermined
-                else -> Result.Detected(code)
-            }
+            // Use the ranked API so we get the top candidate's confidence,
+            // not just its code. Confidence doubles as a quality signal we
+            // surface in the UI when the model is only weakly sure.
+            val ranked = client.identifyPossibleLanguages(text).await()
+                .filter { it.languageTag != "und" }
+            val top = ranked.firstOrNull()
+            Log.i(TAG, "Identified '$text' -> ${top?.languageTag ?: "und"} @ ${top?.confidence ?: 0f}")
+            if (top == null) Result.Undetermined
+            else Result.Detected(top.languageTag, top.confidence)
         } catch (t: Throwable) {
             Log.w(TAG, "Language identification failed", t)
             Result.Error(t)
@@ -77,7 +80,7 @@ class ExternalLanguageId {
     data class Candidate(val code: String, val confidence: Float)
 
     sealed class Result {
-        data class Detected(val code: String) : Result()
+        data class Detected(val code: String, val confidence: Float) : Result()
         object Undetermined : Result()
         data class Error(val throwable: Throwable) : Result()
     }

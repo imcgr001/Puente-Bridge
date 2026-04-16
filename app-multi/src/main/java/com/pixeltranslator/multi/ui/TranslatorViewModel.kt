@@ -32,7 +32,11 @@ data class ConversationTurn(
     val sourceDisplayName: String,  // always populated — falls back to ISO code for exotic languages
     val targetLanguage: Language,
     val spokenAloud: Boolean,  // false → TTS voice wasn't available; translation shown as text only
-    val lowConfidence: Boolean = false  // auto-detect: detector couldn't confidently identify language
+    val lowConfidence: Boolean = false,       // detector confidence below threshold
+    val qualityUnverified: Boolean = false,   // source is outside our curated 13 (ML-Kit-only support)
+    val translationSuspect: Boolean = false,  // output-side sanity check failed — translation ≠ target language
+    val unexpectedEnglish: Boolean = false,   // auto-detect identified English — likely audio-encoder hallucination from a non-English speaker
+    val confusableSink: Boolean = false       // auto-detect identified a language that often absorbs its neighbors (Hindi, Russian, Arabic, etc.)
 )
 
 /**
@@ -266,6 +270,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     put("tgt", t.targetLanguage.code)
                     put("spoken", t.spokenAloud)
                     put("lowConf", t.lowConfidence)
+                    put("qualUnv", t.qualityUnverified)
+                    put("trSusp", t.translationSuspect)
+                    put("unexEn", t.unexpectedEnglish)
+                    put("confSink", t.confusableSink)
                 })
             }
             pendingTurnsFile.writeText(arr.toString())
@@ -293,7 +301,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         sourceDisplayName = srcName,
                         targetLanguage = tgt,
                         spokenAloud = obj.getBoolean("spoken"),
-                        lowConfidence = obj.optBoolean("lowConf", false)
+                        lowConfidence = obj.optBoolean("lowConf", false),
+                        qualityUnverified = obj.optBoolean("qualUnv", false),
+                        translationSuspect = obj.optBoolean("trSusp", false),
+                        unexpectedEnglish = obj.optBoolean("unexEn", false),
+                        confusableSink = obj.optBoolean("confSink", false)
                     )
                 )
             }
@@ -401,11 +413,15 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                             } else {
                                 // Recognized language but not in our curated 13
                                 // (Czech, Polish, Persian, Turkish, etc.).
-                                // Gemma can still translate it to English.
+                                // Gemma can still translate it to English,
+                                // but we haven't verified quality for this set.
                                 source = null
                                 sourceDisplayName = Language.displayNameForUnmapped(mlResult.code)
                             }
-                            lowConfidence = false
+                            // Flag as low-confidence when ML Kit itself isn't
+                            // strongly sure — correlates with borderline input
+                            // that Gemma is likely also uncertain about.
+                            lowConfidence = mlResult.confidence < 0.85f
                         }
                         is ExternalLanguageId.Result.Undetermined,
                         is ExternalLanguageId.Result.Error -> {
@@ -443,6 +459,42 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     else gemma.translate(transcription, sourceDisplayName, target)
                 val spokenAloud = tts.isAvailable(target.locale)
 
+                // Out-of-set source: we can translate via Gemma but quality
+                // isn't verified for these languages. Flag so the UI warns.
+                val qualityUnverified = s.isAutoDetect && source == null
+
+                // Output-side sanity check: run ML Kit on the translation and
+                // confirm it's in the target language. Catches Gemma returning
+                // source-language text unchanged, or hallucinating a different
+                // language entirely. Only runs when we have a translation (i.e.
+                // source != target, so gemma.translate was actually invoked).
+                val translationSuspect = if (source != target) {
+                    val outputCheck = languageId.identify(translation)
+                    outputCheck is ExternalLanguageId.Result.Detected
+                        && outputCheck.code != target.code
+                } else false
+
+                // Structural check: auto-detect mode exists for non-English
+                // input (operator speaks English, wants to translate what the
+                // other party said). If auto-detect identifies English, it's
+                // almost certainly Gemma's audio encoder hallucinating from
+                // unparseable foreign phonemes — we've seen this fire for
+                // Burmese ("Hello Nicole, I'm a Transcribe."), Farsi phonetic
+                // approximations, Pashto, etc. Text-level signals can't catch
+                // this because the hallucinated English IS valid English.
+                val unexpectedEnglish = s.isAutoDetect && source == Language.ENGLISH
+
+                // Neighbor-language confusability warning: when auto-detect
+                // lands on a "sink" language (Hindi, Russian, Arabic, etc.)
+                // that Gemma's audio encoder tends to collapse sibling
+                // languages into, surface a soft warning. The detection may
+                // still be correct — but an operator who expected a close-
+                // cousin language (Bengali, Serbian, Persian) should double-
+                // check rather than trust the label.
+                val confusableSink = s.isAutoDetect
+                    && source != null
+                    && Language.confusableNeighbors(source).isNotEmpty()
+
                 val turn = ConversationTurn(
                     transcription = transcription,
                     translation = translation,
@@ -450,7 +502,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     sourceDisplayName = sourceDisplayName,
                     targetLanguage = target,
                     spokenAloud = spokenAloud,
-                    lowConfidence = lowConfidence
+                    lowConfidence = lowConfidence,
+                    qualityUnverified = qualityUnverified,
+                    translationSuspect = translationSuspect,
+                    unexpectedEnglish = unexpectedEnglish,
+                    confusableSink = confusableSink
                 )
                 _uiState.update {
                     it.copy(

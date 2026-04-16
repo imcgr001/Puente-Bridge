@@ -541,7 +541,9 @@ private fun ConversationBubble(turn: ConversationTurn) {
             )
             if (turn.sourceLanguage == null) {
                 // Out-of-set language: recognized for translation but not a
-                // paired-mode conversation language in this build.
+                // paired-mode conversation language in this build. Note: does
+                // NOT repeat the quality-unverified warning — that's its own
+                // label below and carries the stronger claim.
                 Text(
                     text = "(recognized, not a conversation pair language)",
                     style = MaterialTheme.typography.labelSmall,
@@ -563,11 +565,51 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 18.sp
             )
-            if (turn.lowConfidence) {
+            // Four quality-warning signals. Each fires independently and
+            // carries a different message. Most serious / specific first.
+            if (turn.unexpectedEnglish) {
+                // Auto-detect found English when it should have found another
+                // language. Most likely Gemma's audio encoder hallucinated.
                 Text(
-                    text = "(low confidence — language may not be supported; output may be inaccurate)",
+                    text = "(unexpected English — audio may not have been understood)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (turn.translationSuspect) {
+                // Output-side ML Kit check disagreed with the target language.
+                Text(
+                    text = "(output sanity check failed — translation may not be correct)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (turn.qualityUnverified) {
+                // Translating through a language outside our verified 13.
+                // Gemma handled it, but we haven't benchmarked quality.
+                Text(
+                    text = "(translation quality unverified for ${turn.sourceDisplayName})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (turn.lowConfidence) {
+                Text(
+                    text = "(low detection confidence — language identification uncertain)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (turn.confusableSink && turn.sourceLanguage != null) {
+                // Soft warning: Gemma's audio encoder tends to absorb sibling
+                // languages into this one. Detection MAY still be correct;
+                // just flag for operator sanity-check if they expected a
+                // close-cousin language.
+                val neighbors = Language.confusableNeighbors(turn.sourceLanguage).joinToString(", ")
+                Text(
+                    text = "(auto-detect may confuse ${turn.sourceDisplayName} with related languages such as $neighbors — use paired mode if you know the speaker's language)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             if (!turn.spokenAloud) {

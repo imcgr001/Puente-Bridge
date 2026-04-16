@@ -283,6 +283,27 @@ enum class Language(
          * even when it's outside our fully-supported set. Falls back to the
          * raw code if we haven't mapped it.
          */
+        /**
+         * "Sink" languages whose audio encoder has historically absorbed
+         * sibling languages in auto-detect mode. When Gemma can't parse a
+         * neighbor language's phonemes, it tends to produce text in the most
+         * training-data-rich relative instead — Bengali as Hindi, Serbian as
+         * Russian, Pashto/Farsi as Arabic, and so on.
+         *
+         * When auto-detect identifies one of these sinks, we surface a soft
+         * warning listing the likely confusable neighbors so the operator can
+         * sanity-check against what they actually heard. Empty list means the
+         * detected language is not a known collapse target.
+         */
+        fun confusableNeighbors(lang: Language): List<String> = when (lang) {
+            HINDI -> listOf("Bengali", "Punjabi", "Gujarati", "Marathi", "Nepali", "Urdu")
+            RUSSIAN -> listOf("Serbian", "Ukrainian", "Belarusian", "Bulgarian", "Macedonian")
+            ARABIC -> listOf("Persian (Farsi)", "Urdu", "Pashto", "Dari")
+            CHINESE -> listOf("Cantonese", "other Sinitic languages")
+            SPANISH -> listOf("Portuguese", "Galician", "Catalan")
+            else -> emptyList()
+        }
+
         fun displayNameForUnmapped(code: String): String = when (code.lowercase()) {
             "af" -> "Afrikaans"
             "am" -> "Amharic"
