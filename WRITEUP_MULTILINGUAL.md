@@ -13,7 +13,7 @@ Puente-Multi is a fully on-device, real-time speech-to-speech translator spannin
 Puente-Multi offers two operating modes that together address the breadth of real-world translation scenarios:
 
 - **Paired mode** for the common case — two known speakers having a back-and-forth conversation in two pre-selected languages. Optimized for fluency, with anchored prompting and binary detection.
-- **Auto-detect mode** for the high-stakes case — a single operator who doesn't know in advance what language the other person will speak. Open-set transcription against all 13 languages, target hardcoded to English (the operator's language). Designed for disaster response intake, refugee reception, hospital triage, and other "process people of unknown origin" scenarios.
+- **Auto-detect mode** for the high-stakes case — a single operator who doesn't know in advance what language the other person will speak. Open-set transcription and language identification across **~110 languages** (via Google ML Kit's on-device language-ID model), target hardcoded to English (the operator's language). Designed for disaster response intake, refugee reception, hospital triage, and other "process people of unknown origin" scenarios.
 
 Puente-Multi is a generalization of the earlier EN↔ES translator into a thirteen-way any-to-any tool. It is built for anyone who needs to communicate across the world's major language barriers — in disaster zones, at field clinics, across border crossings, or simply between travelers and locals — in places where internet is unavailable, where privacy is non-negotiable, or where professional interpretation is out of reach.
 
@@ -95,19 +95,33 @@ This is the production-grade path: anchoring catches "muy bien" as Spanish rathe
 A small Switch labeled "Auto-detect language → English" disables the language pair and re-routes the per-turn flow:
 
 1. Gemma transcribes with **no** language hint — just *"Transcribe exactly what was said, in its original language. Use that language's native script."*
-2. The transcription is scored against **all 13 supported languages** via `Language.detectFromAllLanguages`. For non-Latin scripts the script-range alone wins decisively (one Han character → Chinese, one Hangul character → Korean, etc.). For Latin-script languages the diacritics + stopwords disambiguate the cluster.
-3. Translation target is hardcoded to English. Always. The operator (presumed English-speaking) gets a usable result regardless of what the other party said.
-4. The detected source language is parked in the (greyed-out) Language B dropdown. The moment the operator toggles auto-detect off, the pair is already English ↔ that language — ready to continue as a back-and-forth conversation if needed.
+2. The transcribed text is handed to **Google ML Kit's on-device Language Identification** model, which covers ~110 languages and returns a confident ISO 639-1 code (or `und` for unrecognized input).
+3. The ML Kit code is mapped to our `Language` enum. Three outcomes:
+   - **In our curated 13** (e.g. Russian, Spanish, Chinese): source becomes the enum entry; translation proceeds normally. The detected language is parked in the (greyed-out) Language B dropdown so that toggling auto-detect off yields a ready-to-go conversation pair.
+   - **Recognized but outside our 13** (e.g. Czech, Polish, Persian, Thai, Hebrew, Greek, Turkish): source enum is `null`, but a proper display name is retained ("Czech", "Polish", etc.). Translation to English still succeeds because Gemma handles most ML Kit–supported languages. The conversation bubble shows a small note "(recognized, not a conversation pair language)" — honest about what happened.
+   - **Undetermined or error**: fall back to our hand-rolled Kotlin scorer as a safety net, flag the turn as low-confidence.
+4. Translation target is hardcoded to English. Always. The operator (presumed English-speaking) gets a usable result regardless of what the other party said.
 
-Empirical testing during development confirmed Gemma's audio encoder produces honest native-script transcription for at least Russian (Cyrillic), Mandarin Chinese (Han), Arabic, French (with diacritics intact), and Spanish — without anchoring. The pipeline transitions cleanly from "first-contact identification" to "ongoing conversation" without the operator having to re-configure anything.
+The ML Kit model adds ~900 KB to the APK, is fully offline, and requires no runtime download — consistent with the app's offline-first disaster-response design. No network permission is needed or declared.
 
-### Why both, not one or the other
+Empirical testing during development confirmed the full pipeline works end-to-end for Russian (Cyrillic), Mandarin Chinese (Han), Arabic, French, Spanish, Slovak ("Ahoj, ako sa máš."), Polish ("Cześć, jak się masz?"), and Thai ("สวัสดีครับ ค่ะ สบายดีไหมครับ คะ"). The non-Latin cases (Russian, Chinese, Arabic, Thai) are detected trivially by script; the Latin-script cases (Slovak, Polish, Czech, Hungarian, Romanian, Turkish) — which previously would have been misdetected as Spanish or Portuguese by our hand-rolled scorer due to shared diacritics — are now identified correctly.
+
+### Architectural split: hand-rolled scorer vs ML Kit
+
+The two modes use genuinely different identification strategies, tuned to their respective problems:
+
+- **Paired mode** is a *closed-set classification problem* — given audio, is it A or B? The deterministic Kotlin scorer in `Language.scoreCandidate` is the right tool: fast, auditable, zero external dependencies, and only has to tell two specific things apart. No model-based identification is needed when the answer space is constrained to two user-selected choices.
+- **Auto-detect mode** is an *open-set identification problem* — given audio, what language is it? Hand-rolled features per language don't scale beyond the curated 13, and the scorer's behavior on out-of-set languages was to force them into the closest-matching candidate (e.g. Czech's `á` diacritic scoring equally for Spanish and Portuguese). ML Kit is the right tool here: its 110-language coverage dramatically reduces the "confidently wrong" failure mode, and its confidence scores are properly calibrated.
+
+Both tools coexist in the codebase. The hand-rolled scorer remains the production default for paired mode (where it's reliable and zero-overhead); ML Kit owns the auto-detect path (where its open-set coverage matters); and if ML Kit ever returns `und` or fails, the hand-rolled scorer is the fallback — no single point of failure.
+
+### Why both modes
 
 Auto-detect is more flexible but loses the safety nets paired mode provides:
 
-- **Anchoring helps short utterances.** "Sí" or "Da" or "Oui" are too short for stopword scoring to work reliably; without anchoring telling Gemma which language to expect, brief casual responses can be transcribed in the wrong language.
-- **Open-set detection has real failure modes.** If the speaker uses a language *outside* the supported 13, auto-detect will force it into the closest-scoring candidate and translate from that, producing confidently-wrong output.
+- **Anchoring helps short utterances.** "Sí" or "Da" or "Oui" are too short for any identifier to work reliably; without anchoring telling Gemma which language to expect, brief casual responses can be transcribed in the wrong language.
 - **Paired conversation is what most users actually want.** A clinic visit, a school meeting, a job-site coordination — those are bilateral by their nature and benefit from the safety net.
+- **TTS in auto-detect is intentionally off.** The operator is listening to the other speaker and doesn't want the app talking back. Translation appears as on-screen text only, which also shaves ~1–3 seconds per turn off playback latency — useful for rapid triage.
 
 The dual-mode design lets the right tool fit the right job, and the handoff path (auto-detect populates B → toggle off → conversation continues in pair mode) means the modes compose naturally rather than fragmenting the experience.
 
@@ -253,7 +267,8 @@ Speaker
 | **Audio encoder** | LiteRT-LM's `miniaudio` on CPU via `Backend.CPU()` | Required by E2B/E4B audio encoder architecture |
 | **Audio capture** | Android `AudioRecord` + `NoiseSuppressor` + `AcousticEchoCanceler` | 16 kHz/16-bit/mono PCM with hardware noise/echo reduction |
 | **Text-to-speech** | Android `TextToSpeech` with per-locale `Locale` | Native voices: English, Spanish, French, German, Portuguese, Italian, Chinese, Japanese, Korean, Hindi, Arabic, Russian, Vietnamese |
-| **Language detection** | Kotlin-side heuristic in `Language.kt` | Script-range + diacritic + stopword scoring — no model call required |
+| **Language detection (paired mode)** | Kotlin-side heuristic in `Language.kt` | Script-range + diacritic + stopword scoring — deterministic binary A-vs-B decision, no model call required |
+| **Language detection (auto-detect mode)** | Google ML Kit Language ID 17.0.6 (bundled, offline) in `ExternalLanguageId.kt` | ~110-language open-set identification from transcribed text; ~900 KB bundled model |
 | **UI** | Jetpack Compose + Material 3 | Two-dropdown language picker + push-to-talk + conversation history |
 | **Storage** | Shared `/sdcard/Download/litertlm-models/` with `MANAGE_EXTERNAL_STORAGE` | Single multi-GB model file serves both bilingual and multilingual apps |
 
@@ -397,7 +412,7 @@ Across all thirteen, consistent limitations:
 - **Humor, sarcasm, cultural references, wordplay** do not translate. The output will be technically accurate and completely flat.
 - **High-stakes use cases still need human interpretation.** Medical consent, legal proceedings, surgical instructions, safety-critical communication — this tool is not a substitute for a qualified human interpreter in those contexts.
 - **The paired-mode A/B constraint is by design.** If a speaker uses a third language (say, French when the pair is set to English/Spanish), the app will incorrectly route the turn. Auto-detect mode addresses this, but introduces its own failure modes.
-- **Auto-detect mode has real failure modes.** Without language anchoring, the audio encoder can occasionally force foreign phonemes into English-shaped tokens. Detection only works for the supported thirteen — speech in any other language will be misclassified. The app surfaces a low-confidence indicator on the conversation bubble when this is suspected.
+- **Auto-detect mode has residual failure modes.** ML Kit's language identifier covers ~110 languages and handles most realistic input cleanly, but (a) without language anchoring during transcription, Gemma's audio encoder can occasionally force foreign phonemes into English-shaped tokens before ML Kit ever sees the text; (b) truly rare languages outside ML Kit's set will return `und` and fall back to the hand-rolled scorer, which may misidentify; (c) translation quality for out-of-set-but-ML-Kit-recognized languages (Czech, Hungarian, Pashto, etc.) is unverified — Gemma handles most of them but results may be more literal than for the curated 13. The app surfaces a low-confidence label when ML Kit and fallback both express uncertainty.
 - **E2B vs E4B matters.** The "Faster" (E2B) model is noticeably weaker than "Higher Accuracy" (E4B) on lower-tier languages. If translation quality for Japanese, Korean, Hindi, or Arabic feels wrong, switching to E4B often helps — at the cost of 1.5× latency and significantly more memory.
 
 The overall honest framing: this tool is an offline communication aid, not a professional translation system. It lets people who don't share a language get an *approximate* understanding of each other in contexts where the alternative is no communication at all. For the contexts where approximate isn't good enough (surgical consent, legal testimony, diplomatic negotiation), the regulations and professional norms that require human interpreters exist for good reasons — and this tool doesn't change that.
@@ -430,6 +445,7 @@ The `Language` enum is the single source of truth for the supported set. Adding 
 - **Language**: Kotlin 2.3.0
 - **UI framework**: Jetpack Compose + Material 3
 - **ML runtime**: LiteRT-LM 0.10.0 (Google AI Edge)
+- **Language identification**: Google ML Kit Language ID 17.0.6 (bundled, offline, ~900 KB)
 - **Model**: Gemma 4 E2B / E4B (`.litertlm` format)
 - **TTS**: Android `TextToSpeech` API
 - **Audio**: Android `AudioRecord` (16 kHz / 16-bit / mono PCM) with hardware `NoiseSuppressor` + `AcousticEchoCanceler`

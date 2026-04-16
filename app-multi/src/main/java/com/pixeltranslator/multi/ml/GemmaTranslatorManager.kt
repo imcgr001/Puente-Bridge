@@ -214,13 +214,25 @@ class GemmaTranslatorManager(private val context: Context) {
         text: String,
         source: Language?,
         target: Language
+    ): String = translate(text, source?.displayName, target)
+
+    /**
+     * Translates [text] into [target] with a free-form source language name.
+     * Used in auto-detect mode when the detected source is an ML Kit language
+     * outside our curated [Language] enum (e.g. Czech, Polish, Persian).
+     * Gemma handles most common languages even without a typed hint.
+     */
+    suspend fun translate(
+        text: String,
+        sourceDisplayName: String?,
+        target: Language
     ): String = withContext(Dispatchers.IO) {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before translate()")
 
         val conv = e.createConversation()
         try {
-            conv.sendMessage(buildTranslatePrompt(text, source, target))
+            conv.sendMessage(buildTranslatePrompt(text, sourceDisplayName, target))
                 .contents.contents
                 .filterIsInstance<Content.Text>()
                 .joinToString("") { it.text }
@@ -255,11 +267,11 @@ class GemmaTranslatorManager(private val context: Context) {
      */
     private fun buildTranslatePrompt(
         transcription: String,
-        source: Language?,
+        sourceDisplayName: String?,
         target: Language
     ): String {
-        val sourceClause = if (source != null)
-            "Source language: ${source.displayName}."
+        val sourceClause = if (sourceDisplayName != null)
+            "Source language: $sourceDisplayName."
         else
             "Source language: auto-detect."
 

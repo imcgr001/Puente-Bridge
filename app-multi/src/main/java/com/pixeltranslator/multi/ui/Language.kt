@@ -258,5 +258,123 @@ enum class Language(
             val top = entries.maxByOrNull { scoreCandidate(text, it) } ?: ENGLISH
             return top to scoreCandidate(text, top)
         }
+
+        /**
+         * Maps an ML Kit ISO 639-1 language code to our Language enum. Returns
+         * null if the code is recognized by ML Kit but not one of our 13
+         * fully-supported languages — caller can still use the transcription
+         * with Gemma for best-effort English translation, but we don't have
+         * TTS / paired-mode support for it.
+         */
+        fun fromIso639(code: String?): Language? {
+            if (code == null) return null
+            val lc = code.trim().lowercase()
+            // ML Kit uses "zh" (which could be Simplified or Traditional), we
+            // normalize to our CHINESE entry (zh-CN / Simplified).
+            val normalized = if (lc == "zh-latn") "en" else lc.substringBefore('-')
+            return entries.firstOrNull { it.code == normalized }
+        }
+
+        /**
+         * Friendly display name for ISO 639-1 codes that ML Kit might return
+         * but which aren't in our [Language] enum. Used to label the source of
+         * an auto-detected turn that maps to an out-of-set language ("Czech",
+         * "Polish", "Turkish") so the UI can tell the user what was recognized
+         * even when it's outside our fully-supported set. Falls back to the
+         * raw code if we haven't mapped it.
+         */
+        fun displayNameForUnmapped(code: String): String = when (code.lowercase()) {
+            "af" -> "Afrikaans"
+            "am" -> "Amharic"
+            "az" -> "Azerbaijani"
+            "be" -> "Belarusian"
+            "bg" -> "Bulgarian"
+            "bn" -> "Bengali"
+            "bs" -> "Bosnian"
+            "ca" -> "Catalan"
+            "ceb" -> "Cebuano"
+            "co" -> "Corsican"
+            "cs" -> "Czech"
+            "cy" -> "Welsh"
+            "da" -> "Danish"
+            "el" -> "Greek"
+            "eo" -> "Esperanto"
+            "et" -> "Estonian"
+            "eu" -> "Basque"
+            "fa" -> "Persian"
+            "fi" -> "Finnish"
+            "fy" -> "Frisian"
+            "ga" -> "Irish"
+            "gd" -> "Scottish Gaelic"
+            "gl" -> "Galician"
+            "gu" -> "Gujarati"
+            "ha" -> "Hausa"
+            "haw" -> "Hawaiian"
+            "he", "iw" -> "Hebrew"
+            "hmn" -> "Hmong"
+            "hr" -> "Croatian"
+            "ht" -> "Haitian Creole"
+            "hu" -> "Hungarian"
+            "hy" -> "Armenian"
+            "id" -> "Indonesian"
+            "ig" -> "Igbo"
+            "is" -> "Icelandic"
+            "jv" -> "Javanese"
+            "ka" -> "Georgian"
+            "kk" -> "Kazakh"
+            "km" -> "Khmer"
+            "kn" -> "Kannada"
+            "ku" -> "Kurdish"
+            "ky" -> "Kyrgyz"
+            "la" -> "Latin"
+            "lb" -> "Luxembourgish"
+            "lo" -> "Lao"
+            "lt" -> "Lithuanian"
+            "lv" -> "Latvian"
+            "mg" -> "Malagasy"
+            "mi" -> "Maori"
+            "mk" -> "Macedonian"
+            "ml" -> "Malayalam"
+            "mn" -> "Mongolian"
+            "mr" -> "Marathi"
+            "ms" -> "Malay"
+            "mt" -> "Maltese"
+            "my" -> "Burmese"
+            "ne" -> "Nepali"
+            "nl" -> "Dutch"
+            "no" -> "Norwegian"
+            "ny" -> "Chichewa"
+            "pa" -> "Punjabi"
+            "pl" -> "Polish"
+            "ps" -> "Pashto"
+            "ro" -> "Romanian"
+            "sd" -> "Sindhi"
+            "si" -> "Sinhala"
+            "sk" -> "Slovak"
+            "sl" -> "Slovenian"
+            "sm" -> "Samoan"
+            "sn" -> "Shona"
+            "so" -> "Somali"
+            "sq" -> "Albanian"
+            "sr" -> "Serbian"
+            "st" -> "Sotho"
+            "su" -> "Sundanese"
+            "sv" -> "Swedish"
+            "sw" -> "Swahili"
+            "ta" -> "Tamil"
+            "te" -> "Telugu"
+            "tg" -> "Tajik"
+            "th" -> "Thai"
+            "tl" -> "Tagalog"
+            "tr" -> "Turkish"
+            "uk" -> "Ukrainian"
+            "ur" -> "Urdu"
+            "uz" -> "Uzbek"
+            "xh" -> "Xhosa"
+            "yi" -> "Yiddish"
+            "yo" -> "Yoruba"
+            "zu" -> "Zulu"
+            else -> code.uppercase()  // fallback: just show the code
+        }
     }
 }

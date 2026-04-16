@@ -533,13 +533,21 @@ private fun PushToTalkButton(
 private fun ConversationBubble(turn: ConversationTurn) {
     SelectionContainer {
         Column(modifier = Modifier.fillMaxWidth()) {
-            val sourceLabel = turn.sourceLanguage?.let { "${it.displayName} → ${turn.targetLanguage.displayName}" }
-                ?: "(unknown) → ${turn.targetLanguage.displayName}"
+            val sourceLabel = "${turn.sourceDisplayName} → ${turn.targetLanguage.displayName}"
             Text(
                 text = sourceLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (turn.sourceLanguage == null) {
+                // Out-of-set language: recognized for translation but not a
+                // paired-mode conversation language in this build.
+                Text(
+                    text = "(recognized, not a conversation pair language)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(modifier = Modifier.height(2.dp))
             if (turn.transcription.isNotEmpty()) {
                 Text(

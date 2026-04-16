@@ -14,6 +14,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import androidx.lifecycle.viewModelScope
 import com.pixeltranslator.multi.audio.AudioCaptureManager
+import com.pixeltranslator.multi.ml.ExternalLanguageId
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager.ModelSize
 import com.pixeltranslator.multi.ml.TtsManager
@@ -27,10 +28,11 @@ import kotlinx.coroutines.launch
 data class ConversationTurn(
     val transcription: String,
     val translation: String,
-    val sourceLanguage: Language?,
+    val sourceLanguage: Language?,  // null when auto-detect identified a language outside our 13
+    val sourceDisplayName: String,  // always populated — falls back to ISO code for exotic languages
     val targetLanguage: Language,
     val spokenAloud: Boolean,  // false → TTS voice wasn't available; translation shown as text only
-    val lowConfidence: Boolean = false  // auto-detect mode: text-side detector couldn't confidently identify language
+    val lowConfidence: Boolean = false  // auto-detect: detector couldn't confidently identify language
 )
 
 /**
@@ -71,6 +73,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
     private val tts = TtsManager(application)
+    private val languageId = ExternalLanguageId()
     private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val pendingTurnsFile = File(application.cacheDir, "pending_turns.json")
 
@@ -259,8 +262,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     put("transcription", t.transcription)
                     put("translation", t.translation)
                     put("src", t.sourceLanguage?.code ?: JSONObject.NULL)
+                    put("srcName", t.sourceDisplayName)
                     put("tgt", t.targetLanguage.code)
                     put("spoken", t.spokenAloud)
+                    put("lowConf", t.lowConfidence)
                 })
             }
             pendingTurnsFile.writeText(arr.toString())
@@ -277,14 +282,18 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val srcCode = if (obj.isNull("src")) null else obj.getString("src")
+                val srcLang = Language.fromCode(srcCode)
+                val srcName = obj.optString("srcName", srcLang?.displayName ?: "Unknown")
                 val tgt = Language.fromCode(obj.getString("tgt")) ?: Language.ENGLISH
                 result.add(
                     ConversationTurn(
                         transcription = obj.getString("transcription"),
                         translation = obj.getString("translation"),
-                        sourceLanguage = Language.fromCode(srcCode),
+                        sourceLanguage = srcLang,
+                        sourceDisplayName = srcName,
                         targetLanguage = tgt,
-                        spokenAloud = obj.getBoolean("spoken")
+                        spokenAloud = obj.getBoolean("spoken"),
+                        lowConfidence = obj.optBoolean("lowConf", false)
                     )
                 )
             }
@@ -366,30 +375,57 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val s = _uiState.value
 
-                // Two paths: open auto-detect (experimental — no language hint
-                // to Gemma, score against all 13, always translate to English)
-                // vs. binary A/B-anchored detection (production default).
-                val source: Language
+                // Two paths: open auto-detect (ML Kit language ID across ~110
+                // languages, always translate to English) vs. binary A/B-anchored
+                // detection (paired-mode production default). In auto-detect,
+                // [source] can be null when the detected language isn't one of
+                // our curated 13 — we still have a display name for the UI,
+                // and Gemma can translate most recognized languages to English.
+                val source: Language?
+                val sourceDisplayName: String
                 val target: Language
                 val transcription: String
                 var lowConfidence = false
                 if (s.isAutoDetect) {
                     transcription = gemma.transcribeOpen(audio)
-                    val (detected, confidence) = Language.detectFromAllLanguagesWithConfidence(transcription)
-                    source = detected
+                    // Open-set detection via ML Kit (~110 languages), falling
+                    // back to our hand-rolled Kotlin scorer if ML Kit can't
+                    // identify the text confidently.
+                    val mlResult = languageId.identify(transcription)
+                    when (mlResult) {
+                        is ExternalLanguageId.Result.Detected -> {
+                            val mapped = Language.fromIso639(mlResult.code)
+                            if (mapped != null) {
+                                source = mapped
+                                sourceDisplayName = mapped.displayName
+                            } else {
+                                // Recognized language but not in our curated 13
+                                // (Czech, Polish, Persian, Turkish, etc.).
+                                // Gemma can still translate it to English.
+                                source = null
+                                sourceDisplayName = Language.displayNameForUnmapped(mlResult.code)
+                            }
+                            lowConfidence = false
+                        }
+                        is ExternalLanguageId.Result.Undetermined,
+                        is ExternalLanguageId.Result.Error -> {
+                            // Fall back to our scorer. Likely low-confidence;
+                            // flag the turn.
+                            val (detected, confidence) =
+                                Language.detectFromAllLanguagesWithConfidence(transcription)
+                            source = detected
+                            sourceDisplayName = detected.displayName
+                            lowConfidence = confidence < 4
+                        }
+                    }
                     target = Language.ENGLISH
-                    // Threshold of 4 catches transliterated out-of-set languages
-                    // (Farsi spoken → "salam cheghad" with 0 score) and
-                    // undetectable gibberish, without flagging genuine short
-                    // English responses that match 1–2 stopwords.
-                    lowConfidence = confidence < 4
-                    // Handoff helper: park the detected source language in B
-                    // (the greyed-out dropdown). When the operator toggles
-                    // auto OFF, the pair is already English ↔ that language,
-                    // ready for an actual back-and-forth conversation.
-                    // Skip if source is just A or confidence too low — no useful pair.
-                    if (source != s.languageA && !lowConfidence) {
-                        setLanguageB(source)
+
+                    // Handoff helper: park the detected source in B so toggling
+                    // auto OFF yields a ready-to-converse pair. Only applies when
+                    // the detected language is one of our 13 AND we're confident.
+                    val inSetSource = source
+                    if (inSetSource != null && inSetSource != s.languageA && !lowConfidence) {
+                        setLanguageB(inSetSource)
                     }
                 } else {
                     val pair = gemma.transcribeAndDetect(
@@ -398,18 +434,20 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         candidateB = s.languageB
                     )
                     source = pair.first
+                    sourceDisplayName = pair.first.displayName
                     transcription = pair.second
                     target = if (source == s.languageA) s.languageB else s.languageA
                 }
 
-                val translation = if (source == target) transcription
-                    else gemma.translate(transcription, source, target)
+                val translation = if (source != null && source == target) transcription
+                    else gemma.translate(transcription, sourceDisplayName, target)
                 val spokenAloud = tts.isAvailable(target.locale)
 
                 val turn = ConversationTurn(
                     transcription = transcription,
                     translation = translation,
                     sourceLanguage = source,
+                    sourceDisplayName = sourceDisplayName,
                     targetLanguage = target,
                     spokenAloud = spokenAloud,
                     lowConfidence = lowConfidence
@@ -444,5 +482,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         super.onCleared()
         gemma.close()
         tts.close()
+        languageId.close()
     }
 }

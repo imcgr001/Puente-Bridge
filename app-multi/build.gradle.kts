@@ -60,7 +60,15 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
 
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.0")
+
+    // ML Kit Language Identification — bundled model, offline-capable,
+    // identifies ~110 languages from transcribed text. Adds ~900 KB.
+    // Used by auto-detect mode to replace the hand-rolled scorer for
+    // open-set identification across languages we haven't curated features for.
+    implementation("com.google.mlkit:language-id:17.0.6")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
