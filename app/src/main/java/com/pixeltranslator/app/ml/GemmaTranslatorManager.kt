@@ -6,8 +6,10 @@ import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -38,6 +40,22 @@ class GemmaTranslatorManager(private val context: Context) {
     companion object {
         private const val TAG = "GemmaTranslator"
         private const val MAX_TOKENS = 1536
+
+        // Near-greedy sampling for ASR. High-temperature (LiteRT default)
+        // sampling on short utterances lets Gemma drift past the real
+        // transcription and paraphrase the prompt; greedy eliminates that.
+        private val ASR_SAMPLER = SamplerConfig(
+            topK = 1,
+            topP = 1.0,
+            temperature = 0.0,
+            seed = 0
+        )
+        private val TRANSLATION_SAMPLER = SamplerConfig(
+            topK = 40,
+            topP = 0.95,
+            temperature = 0.3,
+            seed = 0
+        )
         /**
          * Shared model directory used by both this app and app-multi so they
          * don't each need their own multi-GB copy of the weights. Requires
@@ -126,17 +144,28 @@ class GemmaTranslatorManager(private val context: Context) {
 
         val wavBytes = wrapPcmAsWav(pcmAudio, sampleRate = 16000, channels = 1, bitsPerSample = 16)
 
-        // Step 1: Transcribe
+        // Step 1: Transcribe. Adapted from Google's documented ASR prompt
+        // (ai.google.dev/gemma/docs/capabilities/audio) — the bulleted
+        // formatting instructions are what Google trained the model to
+        // follow for short, clean transcriptions.
         val transcribeContents = Contents.of(
             Content.AudioBytes(wavBytes),
-            Content.Text("Transcribe this speech exactly as spoken. Output ONLY the transcription, nothing else.")
+            Content.Text(
+                """
+                Transcribe the following speech segment in its original language. The speaker used either English or Spanish (español).
+
+                Follow these specific instructions for formatting the answer:
+                * Only output the transcription, with no newlines.
+                * When transcribing numbers, write the digits, i.e. write 1.7 and not one point seven, and write 3 instead of three.
+                """.trimIndent()
+            )
         )
 
         // Transcribe and translate in *separate* Conversations so the audio-token
         // KV cache is reclaimed before the translate step allocates its own. On
         // E4B, keeping both in one Conversation left enough undrained native
         // state to OOM-kill the process after a few turns.
-        val transcribeConv = e.createConversation()
+        val transcribeConv = e.createConversation(ConversationConfig(samplerConfig = ASR_SAMPLER))
         val transcription = try {
             val resp = transcribeConv.sendMessage(transcribeContents)
             resp.contents.contents
@@ -154,7 +183,7 @@ class GemmaTranslatorManager(private val context: Context) {
         val targetLang = if (sourceLang == "es") "en" else "es"
         val targetName = if (targetLang == "es") "Spanish" else "English"
 
-        val translateConv = e.createConversation()
+        val translateConv = e.createConversation(ConversationConfig(samplerConfig = TRANSLATION_SAMPLER))
         val translation = try {
             val resp = translateConv.sendMessage(buildTranslatePrompt(transcription, targetLang, targetName))
             resp.contents.contents

@@ -158,6 +158,17 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
         return
     }
 
+    if (uiState.showSettings) {
+        SettingsScreen(
+            isAutoDetect = uiState.isAutoDetect,
+            isDirectTranslation = uiState.isDirectTranslation,
+            onSetAutoDetect = viewModel::setAutoDetect,
+            onSetDirectTranslation = viewModel::setDirectTranslation,
+            onDismiss = viewModel::closeSettings
+        )
+        return
+    }
+
     if (uiState.showAbout) {
         AboutScreen(
             strings = Strings.forLanguage(uiState.languageA),
@@ -229,6 +240,12 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 modifier = Modifier.weight(1f)
             ) {
                 Text(strings.disclaimerButton, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = viewModel::openSettings,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Settings", maxLines = 1)
             }
             OutlinedButton(
                 onClick = viewModel::clearConversation,
@@ -307,11 +324,9 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Language dropdowns flank the push-to-talk button: A on the left
-        // (operator's side), B on the right (the other speaker's side).
-        // Weighted slots on either side of the fixed-size Mic keep the Mic
-        // at the true horizontal center regardless of how long the language
-        // labels are.
+        // Language dropdowns on their own row, side by side. Keeping them
+        // separate from the mic row lets the mic area breathe and keeps
+        // the dual-mic (paired+direct) layout symmetric.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -326,12 +341,6 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 onSelect = viewModel::setLanguageA,
                 enabled = !uiState.isAutoDetect
             )
-            PushToTalkButton(
-                isRecording = uiState.isRecording,
-                enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
-                onPressStart = viewModel::onPushToTalkPressed,
-                onPressEnd = viewModel::onPushToTalkReleased
-            )
             LanguageDropdown(
                 modifier = Modifier
                     .weight(1f)
@@ -342,6 +351,43 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 onSelect = viewModel::setLanguageB,
                 enabled = !uiState.isAutoDetect
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Mic row on its own. Single centered mic in normal mode; in
+        // paired+direct mode, two direction-specific mics flank the row
+        // edges (left = A→B, right = B→A) so the operator and speaker
+        // each have an obvious button on their side of the phone.
+        val showDualMic = uiState.isDirectTranslation && !uiState.isAutoDetect
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = if (showDualMic) Arrangement.SpaceBetween else Arrangement.Center
+        ) {
+            if (showDualMic) {
+                PushToTalkButton(
+                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageB,
+                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
+                    label = "${uiState.languageA.code.uppercase()}→${uiState.languageB.code.uppercase()}",
+                    onPressStart = { viewModel.onPushToTalkPressed(uiState.languageB) },
+                    onPressEnd = viewModel::onPushToTalkReleased
+                )
+                PushToTalkButton(
+                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageA,
+                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
+                    label = "${uiState.languageB.code.uppercase()}→${uiState.languageA.code.uppercase()}",
+                    onPressStart = { viewModel.onPushToTalkPressed(uiState.languageA) },
+                    onPressEnd = viewModel::onPushToTalkReleased
+                )
+            } else {
+                PushToTalkButton(
+                    isRecording = uiState.isRecording,
+                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
+                    onPressStart = { viewModel.onPushToTalkPressed() },
+                    onPressEnd = viewModel::onPushToTalkReleased
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -357,35 +403,88 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // Open-set autodetect mode. When on, the mic press ignores the
-        // A/B pair, transcribes with no language hint, scores detection
-        // against all 13 languages, and always translates to English. The
-        // Switch makes the toggle nature unambiguous; the two-line label
-        // tells the user what the mode actually does.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start,
-            verticalAlignment = Alignment.CenterVertically
+    }
+}
+
+/**
+ * Full-screen Settings modal. Houses the per-turn mode toggles that used
+ * to live on the main screen's bottom strip. Kept separate so the main
+ * screen can give the paired+direct dual-mic layout room to breathe.
+ */
+@Composable
+private fun SettingsScreen(
+    isAutoDetect: Boolean,
+    isDirectTranslation: Boolean,
+    onSetAutoDetect: (Boolean) -> Unit,
+    onSetDirectTranslation: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(horizontal = 24.dp, vertical = 24.dp)
+    ) {
+        Text(
+            text = "Settings",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        SettingRow(
+            checked = isAutoDetect,
+            onCheckedChange = onSetAutoDetect,
+            title = "Auto-detect language",
+            subtitle = "Open-set language identification. Translates anything spoken into English — text only, no speech."
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        SettingRow(
+            checked = isDirectTranslation,
+            onCheckedChange = onSetDirectTranslation,
+            title = "Direct translation",
+            subtitle = "Faster audio → translation in one step, no transcription shown. In paired mode, two direction-specific mics replace the single mic."
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        androidx.compose.material3.Button(
+            onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            androidx.compose.material3.Switch(
-                checked = uiState.isAutoDetect,
-                onCheckedChange = viewModel::setAutoDetect,
-                modifier = Modifier.scale(0.75f)
+            Text("Done")
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    title: String,
+    subtitle: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        androidx.compose.material3.Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold
             )
-            Spacer(modifier = Modifier.width(4.dp))
-            Column {
-                Text(
-                    text = "Auto-detect language",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "Transcribes and translates anything spoken into English — text only, no speech",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -487,7 +586,8 @@ private fun PushToTalkButton(
     isRecording: Boolean,
     enabled: Boolean,
     onPressStart: () -> Unit,
-    onPressEnd: () -> Unit
+    onPressEnd: () -> Unit,
+    label: String? = null
 ) {
     val buttonColor = when {
         !enabled -> MaterialTheme.colorScheme.surfaceVariant
@@ -521,10 +621,14 @@ private fun PushToTalkButton(
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = if (isRecording) "REC" else "MIC",
+            text = when {
+                isRecording -> "REC"
+                label != null -> label
+                else -> "MIC"
+            },
             color = textColor,
             fontWeight = FontWeight.Bold,
-            fontSize = 16.sp
+            fontSize = if (label != null) 13.sp else 16.sp
         )
     }
 }
@@ -539,7 +643,11 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (turn.sourceLanguage == null) {
+            // Direct-translation turns have no transcription step and thus
+            // no source-language detection — the "not a conversation pair
+            // language" warning would be misleading there. Suppress it on
+            // empty-transcription turns.
+            if (turn.sourceLanguage == null && turn.transcription.isNotEmpty()) {
                 // Out-of-set language: recognized for translation but not a
                 // paired-mode conversation language in this build. Note: does
                 // NOT repeat the quality-unverified warning — that's its own

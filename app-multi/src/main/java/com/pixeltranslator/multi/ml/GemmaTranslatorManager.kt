@@ -6,8 +6,10 @@ import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import com.pixeltranslator.multi.ui.Language
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -53,6 +55,28 @@ class GemmaTranslatorManager(private val context: Context) {
 
     companion object {
         private const val TAG = "GemmaTranslator"
+
+        // Per-task sampling configurations. Defaults in LiteRT-LM are the
+        // Gemma 4 generic chat settings (temp=1.0 / topK=64 / topP=0.95),
+        // which is too stochastic for ASR — high-temperature sampling on
+        // short utterances lets Gemma drift past the real transcription
+        // and paraphrase the prompt as filler (observed: "muy bien, I
+        // need to transcribe the following segment..."). Near-greedy
+        // settings eliminate that.
+        private val ASR_SAMPLER = SamplerConfig(
+            topK = 1,
+            topP = 1.0,
+            temperature = 0.0,
+            seed = 0
+        )
+        // Translation benefits from a touch of diversity (synonym
+        // selection), but not much — still firmly low-temp.
+        private val TRANSLATION_SAMPLER = SamplerConfig(
+            topK = 40,
+            topP = 0.95,
+            temperature = 0.3,
+            seed = 0
+        )
         private const val MAX_TOKENS = 1536
         /**
          * Shared model directory used by both this app and the bilingual app
@@ -141,7 +165,7 @@ class GemmaTranslatorManager(private val context: Context) {
             Content.AudioBytes(wavBytes),
             Content.Text(buildTranscribePrompt(candidateA, candidateB))
         )
-        val conv = e.createConversation()
+        val conv = e.createConversation(ConversationConfig(samplerConfig = ASR_SAMPLER))
         val transcription = try {
             conv.sendMessage(contents).contents.contents
                 .filterIsInstance<Content.Text>()
@@ -189,7 +213,7 @@ class GemmaTranslatorManager(private val context: Context) {
                 "No labels, no translation, no explanation."
             )
         )
-        val conv = e.createConversation()
+        val conv = e.createConversation(ConversationConfig(samplerConfig = ASR_SAMPLER))
         val transcription = try {
             conv.sendMessage(contents).contents.contents
                 .filterIsInstance<Content.Text>()
@@ -205,6 +229,119 @@ class GemmaTranslatorManager(private val context: Context) {
         Log.i(TAG, "TranscribeOpen: $transcription")
         transcription
     }
+
+    /**
+     * Direct audio → target-language translation (Gemma 4 "AST"). One
+     * Conversation, one inference — audio is sent with a "translate into
+     * $targetName" prompt and the output is the translation directly. No
+     * intermediate transcription is produced or shown.
+     *
+     * Use case: ~2× faster than the transcribe+translate pipeline because
+     * only one Gemma call runs. The cost is that we commit to the target
+     * up front, so this mode only makes sense when the direction is known
+     * (auto-detect: target is always English; paired mode: target is B).
+     */
+    suspend fun translateSpeechDirect(
+        pcmAudio: ByteArray,
+        target: Language
+    ): String = withContext(Dispatchers.IO) {
+        val e = engine
+            ?: throw IllegalStateException("Call initialize() before translateSpeechDirect()")
+
+        val wavBytes = wrapPcmAsWav(pcmAudio, sampleRate = 16000, channels = 1, bitsPerSample = 16)
+        val promptText =
+            "Translate the following speech segment into ${target.displayName} " +
+            "(${target.nativeName}). Output only the translation, in ${target.displayName}'s native script."
+        val contents = Contents.of(
+            Content.AudioBytes(wavBytes),
+            Content.Text(promptText)
+        )
+        val conv = e.createConversation(ConversationConfig(samplerConfig = TRANSLATION_SAMPLER))
+        try {
+            conv.sendMessage(contents).contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+                .trim()
+                .trim('"')
+        } finally {
+            conv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
+        }
+    }
+
+    /**
+     * Paired-mode direct translation with Gemma-internal language ID: Gemma
+     * hears the audio, internally decides which of [pairA] or [pairB] was
+     * spoken, then translates into the OTHER one in a single AST call. This
+     * gives automatic direction without a separate LID pass or alternation
+     * heuristic, at the cost of trusting Gemma's acoustic LID (which is good
+     * for high-resource pairs like EN↔ES but can misfire on close cousins).
+     *
+     * The model is instructed to emit a `LANG: xx` header followed by the
+     * translation text so we know which target locale to use for TTS. Parse
+     * failures fall back to [pairB] as the target.
+     */
+    suspend fun translateSpeechDirectPaired(
+        pcmAudio: ByteArray,
+        pairA: Language,
+        pairB: Language
+    ): DirectResult = withContext(Dispatchers.IO) {
+        val e = engine
+            ?: throw IllegalStateException("Call initialize() before translateSpeechDirectPaired()")
+
+        val wavBytes = wrapPcmAsWav(pcmAudio, sampleRate = 16000, channels = 1, bitsPerSample = 16)
+        val promptText = """
+            The speaker's language is either ${pairA.displayName} (${pairA.nativeName}) or ${pairB.displayName} (${pairB.nativeName}).
+            Translate the speech into whichever of these two languages the speaker is NOT using.
+            If the speaker used ${pairA.displayName}, translate into ${pairB.displayName}.
+            If the speaker used ${pairB.displayName}, translate into ${pairA.displayName}.
+
+            Reply in exactly this format, with nothing else:
+            LANG: xx
+            TEXT: <translation>
+
+            Where xx is the ISO 639-1 code (${pairA.code} or ${pairB.code}) of the language you OUTPUT.
+        """.trimIndent()
+        val contents = Contents.of(
+            Content.AudioBytes(wavBytes),
+            Content.Text(promptText)
+        )
+        val conv = e.createConversation(ConversationConfig(samplerConfig = TRANSLATION_SAMPLER))
+        val raw = try {
+            conv.sendMessage(contents).contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+                .trim()
+        } finally {
+            conv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
+        }
+
+        // Parse the LANG: xx / TEXT: ... format. Tolerate whitespace, extra
+        // punctuation, and missing tags. If LANG is missing or unrecognized,
+        // default the target to pairB — matches the existing alternation
+        // fallback behavior.
+        val langMatch = Regex("""LANG:\s*([A-Za-z]{2})""", RegexOption.IGNORE_CASE).find(raw)
+        val textMatch = Regex("""TEXT:\s*([\s\S]+)""", RegexOption.IGNORE_CASE).find(raw)
+        val detectedCode = langMatch?.groupValues?.get(1)?.lowercase()
+        val detectedLang = when (detectedCode) {
+            pairA.code.lowercase() -> pairA
+            pairB.code.lowercase() -> pairB
+            else -> null
+        }
+        val translation = textMatch?.groupValues?.get(1)?.trim()?.trim('"')
+            ?: raw.trim().trim('"')
+        DirectResult(
+            target = detectedLang ?: pairB,
+            translation = translation
+        )
+    }
+
+    data class DirectResult(val target: Language, val translation: String)
 
     /**
      * Translates [text] into [target]. [source] is an optional hint; passing
@@ -230,7 +367,7 @@ class GemmaTranslatorManager(private val context: Context) {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before translate()")
 
-        val conv = e.createConversation()
+        val conv = e.createConversation(ConversationConfig(samplerConfig = TRANSLATION_SAMPLER))
         try {
             conv.sendMessage(buildTranslatePrompt(text, sourceDisplayName, target))
                 .contents.contents
@@ -246,17 +383,31 @@ class GemmaTranslatorManager(private val context: Context) {
     }
 
     /**
-     * Builds the transcribe prompt. Gemma is told the audio is one of two
-     * specific languages so its audio encoder anchors to the right phoneme
-     * set. We no longer ask it for a language label — text-side detection
-     * in [Language.detectFromText] is used instead.
+     * Builds the transcribe prompt. Gemma 4 E2B/E4B supports BOTH ASR
+     * (speech-to-text) and AST (automated speech translation) via the same
+     * audio pathway — the task is selected purely by prompt wording. Our
+     * earlier prompt ("The speaker is using either A or B. Listen for that
+     * language's phonemes") was subtly ambiguous — "listen for X" can be
+     * read as an AST hint with one of the two as the target. When Gemma
+     * resolved it toward AST, we'd get English-text output from Spanish
+     * audio, which then poisoned downstream direction detection.
+     *
+     * This wording mirrors Google's own documented ASR example and is
+     * explicit that the task is transcription, NOT translation.
+     */
+    /**
+     * Transcribe prompt, adapted from Google's documented Gemma 4 ASR
+     * recipe (ai.google.dev/gemma/docs/capabilities/audio). We keep the
+     * bullet-point formatting guidance from the official example and add
+     * a single sentence naming the two-language pair so the audio encoder
+     * anchors to the right phoneme set.
      */
     private fun buildTranscribePrompt(a: Language, b: Language): String = """
-        The speaker is using either ${a.displayName} (${a.nativeName}) or ${b.displayName} (${b.nativeName}). Listen carefully for that language's phonemes.
+        Transcribe the following speech segment in its original language. The speaker used either ${a.displayName} (${a.nativeName}) or ${b.displayName} (${b.nativeName}).
 
-        Transcribe exactly what was said, in the original language.
-
-        Output ONLY the transcription. No labels, no translation, no explanation.
+        Follow these specific instructions for formatting the answer:
+        * Only output the transcription, with no newlines.
+        * When transcribing numbers, write the digits, i.e. write 1.7 and not one point seven, and write 3 instead of three.
     """.trimIndent()
 
     /**

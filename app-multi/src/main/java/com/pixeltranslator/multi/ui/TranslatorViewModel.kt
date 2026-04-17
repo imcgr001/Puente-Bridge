@@ -59,6 +59,9 @@ data class TranslatorUiState(
     val showDisclaimer: Boolean = false,
     val showAbout: Boolean = false,
     val isAutoDetect: Boolean = false,  // experimental: open-set lang detect, always translate to English
+    val isDirectTranslation: Boolean = false,  // Gemma 4 AST: audio→target in one call, no transcription step
+    val showSettings: Boolean = false,  // bottom-sheet-style modal overlay for mode toggles
+    val pendingDirectTarget: Language? = null,  // set when a direction-specific mic was pressed in paired+direct mode
     val isProcessing: Boolean = false   // a turn is in flight (transcribe/translate/TTS); mic button should be disabled
 )
 
@@ -72,6 +75,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         private const val KEY_LANG_A = "language_a_code"
         private const val KEY_LANG_B = "language_b_code"
         private const val KEY_MODEL = "selected_model"
+        private const val KEY_DIRECT_TRANSLATION = "direct_translation"
     }
 
     private val audioCapture = AudioCaptureManager()
@@ -96,7 +100,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 languageA = a,
                 languageB = b,
                 currentModel = savedModel,
-                turns = pendingTurns
+                turns = pendingTurns,
+                isDirectTranslation = prefs.getBoolean(KEY_DIRECT_TRANSLATION, false)
             )
         }
     )
@@ -199,6 +204,19 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setAutoDetect(enabled: Boolean) {
         _uiState.update { it.copy(isAutoDetect = enabled) }
+    }
+
+    fun setDirectTranslation(enabled: Boolean) {
+        _uiState.update { it.copy(isDirectTranslation = enabled) }
+        prefs.edit().putBoolean(KEY_DIRECT_TRANSLATION, enabled).apply()
+    }
+
+    fun openSettings() {
+        _uiState.update { it.copy(showSettings = true) }
+    }
+
+    fun closeSettings() {
+        _uiState.update { it.copy(showSettings = false) }
     }
 
     /**
@@ -354,9 +372,21 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun onPushToTalkPressed() {
+    /**
+     * Begin recording. In paired+direct-translation mode each mic is bound
+     * to a specific target language (A→B vs B→A), and the caller passes
+     * [directTarget] to indicate which side's mic was pressed. In all other
+     * modes the target is null and direction is decided downstream.
+     */
+    fun onPushToTalkPressed(directTarget: Language? = null) {
         recordingJob = viewModelScope.launch {
-            _uiState.update { it.copy(isRecording = true, status = "Listening...") }
+            _uiState.update {
+                it.copy(
+                    isRecording = true,
+                    status = "Listening...",
+                    pendingDirectTarget = directTarget
+                )
+            }
             audioCapture.startRecording()
             capturedAudio = audioCapture.collectAudio()
         }
@@ -386,6 +416,58 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
             try {
                 val s = _uiState.value
+
+                // Direct-translation mode: Gemma 4 AST — audio goes in with
+                // a target-language prompt and translated text comes out in
+                // one call. ~2× faster than the transcribe+translate path,
+                // but we have no source transcription to show and must
+                // commit to the target up front. In auto-detect we pick
+                // English; in paired mode we pick B (user flips A/B to
+                // change direction).
+                if (s.isDirectTranslation) {
+                    // Direct-mode direction:
+                    //   auto on  → always English (fixed-target AST).
+                    //   paired   → target was chosen by which mic the speaker
+                    //              pressed (A→B or B→A). pendingDirectTarget
+                    //              holds that choice; fall back to B if
+                    //              somehow unset.
+                    val directTarget: Language = if (s.isAutoDetect) {
+                        Language.ENGLISH
+                    } else {
+                        s.pendingDirectTarget ?: s.languageB
+                    }
+                    val directTranslation = gemma.translateSpeechDirect(audio, directTarget)
+                    val directSpokenAloud = tts.isAvailable(directTarget.locale)
+                    // Source is whichever of the pair is NOT target. In auto
+                    // mode we don't know (could be any language), so leave
+                    // null and flag the UI appropriately.
+                    val directSource = if (s.isAutoDetect) null
+                        else if (directTarget == s.languageB) s.languageA else s.languageB
+                    val directSourceName = directSource?.displayName ?: "Any language"
+                    val directTurn = ConversationTurn(
+                        transcription = "",  // no transcription step in this mode
+                        translation = directTranslation,
+                        sourceLanguage = directSource,
+                        sourceDisplayName = directSourceName,
+                        targetLanguage = directTarget,
+                        spokenAloud = directSpokenAloud
+                    )
+                    _uiState.update {
+                        it.copy(
+                            turns = it.turns + directTurn,
+                            status = when {
+                                s.isAutoDetect -> "Ready"
+                                directSpokenAloud -> "Speaking..."
+                                else -> "Ready (no voice installed)"
+                            }
+                        )
+                    }
+                    if (directSpokenAloud && !s.isAutoDetect) {
+                        tts.speak(directTranslation, directTarget.locale)
+                        _uiState.update { it.copy(status = "Ready") }
+                    }
+                    return@launch
+                }
 
                 // Two paths: open auto-detect (ML Kit language ID across ~110
                 // languages, always translate to English) vs. binary A/B-anchored
