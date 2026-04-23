@@ -3,9 +3,12 @@ package com.pixeltranslator.multi.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.AndroidViewModel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,6 +20,7 @@ import com.pixeltranslator.multi.audio.AudioCaptureManager
 import com.pixeltranslator.multi.ml.ExternalLanguageId
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager.ModelSize
+import com.pixeltranslator.multi.ml.TextTranslator
 import com.pixeltranslator.multi.ml.TtsManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +36,7 @@ data class ConversationTurn(
     val sourceDisplayName: String,  // always populated — falls back to ISO code for exotic languages
     val targetLanguage: Language,
     val spokenAloud: Boolean,  // false → TTS voice wasn't available; translation shown as text only
+    val thumbnailJpeg: ByteArray? = null,  // set for image-translation turns; downsampled JPEG for bubble preview
     val lowConfidence: Boolean = false,       // detector confidence below threshold
     val qualityUnverified: Boolean = false,   // source is outside our curated 13 (ML-Kit-only support)
     val translationSuspect: Boolean = false,  // output-side sanity check failed — translation ≠ target language
@@ -76,12 +81,14 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         private const val KEY_LANG_B = "language_b_code"
         private const val KEY_MODEL = "selected_model"
         private const val KEY_DIRECT_TRANSLATION = "direct_translation"
+        private const val KEY_TRANSLATE_MODELS_PRELOADED = "translate_models_preloaded_v1"
     }
 
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
     private val tts = TtsManager(application)
     private val languageId = ExternalLanguageId()
+    private val textTranslator = TextTranslator()
     private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val pendingTurnsFile = File(application.cacheDir, "pending_turns.json")
 
@@ -118,6 +125,33 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         tryLoadModels()
+        preloadTranslateModelsOnce()
+    }
+
+    /**
+     * On first app launch, pre-download ML Kit translator models for every
+     * supported language paired with English. ML Kit pivots through English,
+     * so 12 downloads cover any-to-any translation via the pivot. Once
+     * complete, the app can translate fully offline — critical for the
+     * disaster-response and field-clinic scenarios the app is designed for.
+     *
+     * Fire-and-forget on a background coroutine; a completion flag in prefs
+     * prevents re-running on subsequent launches. Individual download
+     * failures don't block the others or retry automatically — reinstall
+     * or clear this flag to rerun.
+     */
+    private fun preloadTranslateModelsOnce() {
+        if (prefs.getBoolean(KEY_TRANSLATE_MODELS_PRELOADED, false)) return
+        viewModelScope.launch {
+            val isoCodes = Language.entries.map { it.code }
+            val ok = textTranslator.preloadEnglishPivotModels(isoCodes)
+            if (ok >= isoCodes.count { !it.equals("en", ignoreCase = true) }) {
+                prefs.edit().putBoolean(KEY_TRANSLATE_MODELS_PRELOADED, true).apply()
+                Log.i("TranslatorViewModel", "All ML Kit translate models preloaded")
+            } else {
+                Log.w("TranslatorViewModel", "Translate preload partial: $ok models downloaded")
+            }
+        }
     }
 
     /**
@@ -292,6 +326,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     put("trSusp", t.translationSuspect)
                     put("unexEn", t.unexpectedEnglish)
                     put("confSink", t.confusableSink)
+                    if (t.thumbnailJpeg != null) {
+                        put("thumb", android.util.Base64.encodeToString(
+                            t.thumbnailJpeg, android.util.Base64.NO_WRAP
+                        ))
+                    }
                 })
             }
             pendingTurnsFile.writeText(arr.toString())
@@ -311,6 +350,12 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 val srcLang = Language.fromCode(srcCode)
                 val srcName = obj.optString("srcName", srcLang?.displayName ?: "Unknown")
                 val tgt = Language.fromCode(obj.getString("tgt")) ?: Language.ENGLISH
+                val thumbB64 = obj.optString("thumb", "")
+                val thumbBytes = if (thumbB64.isNotEmpty()) {
+                    try {
+                        android.util.Base64.decode(thumbB64, android.util.Base64.NO_WRAP)
+                    } catch (t: Throwable) { null }
+                } else null
                 result.add(
                     ConversationTurn(
                         transcription = obj.getString("transcription"),
@@ -323,7 +368,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         qualityUnverified = obj.optBoolean("qualUnv", false),
                         translationSuspect = obj.optBoolean("trSusp", false),
                         unexpectedEnglish = obj.optBoolean("unexEn", false),
-                        confusableSink = obj.optBoolean("confSink", false)
+                        confusableSink = obj.optBoolean("confSink", false),
+                        thumbnailJpeg = thumbBytes
                     )
                 )
             }
@@ -616,10 +662,176 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    /**
+     * Translate text visible in a picked/captured image. Gemma 4 does OCR
+     * and translation in one call. Target follows the same direction rules
+     * as voice: English in auto-detect mode, languageB in paired mode. The
+     * user swaps A/B to change direction (same contract as voice turns).
+     */
+    /** Gallery/photo-picker entry point. Reads bytes from the URI and delegates. */
+    fun processImage(uri: Uri) {
+        viewModelScope.launch {
+            val bytes = try {
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    } ?: throw IllegalStateException("Could not read image")
+                }
+            } catch (e: Exception) {
+                Log.e("TranslatorViewModel", "Image URI read failed", e)
+                _uiState.update { it.copy(status = "Error: ${e.message}") }
+                return@launch
+            }
+            processImageBytes(bytes)
+        }
+    }
+
+    /** Camera-capture entry point. Raw JPEG bytes from the camera flow. */
+    fun processImageBytes(bytes: ByteArray) {
+        viewModelScope.launch {
+            val s0 = _uiState.value
+            if (!s0.isModelLoaded || s0.isProcessing) return@launch
+
+            val thumb = withContext(Dispatchers.IO) { makeThumbnail(bytes) }
+
+            // Target follows the user's selected primary language. Auto-detect
+            // always targets English (existing rule); paired mode targets A
+            // (operator's language). Users who want the other direction swap
+            // A and B.
+            val target = if (s0.isAutoDetect) Language.ENGLISH else s0.languageA
+
+            // Seed a placeholder turn with the thumbnail so the user sees
+            // the image while Gemma runs. We'll swap in the real translation
+            // when the inference returns.
+            val placeholder = ConversationTurn(
+                transcription = "",
+                translation = "(translating...)",
+                sourceLanguage = null,
+                sourceDisplayName = "Photo",
+                targetLanguage = target,
+                spokenAloud = false,
+                thumbnailJpeg = thumb
+            )
+            val placeholderIndex = _uiState.value.turns.size
+            _uiState.update {
+                it.copy(
+                    turns = it.turns + placeholder,
+                    isProcessing = true,
+                    status = "Translating image..."
+                )
+            }
+
+            try {
+                // Step 1: Gemma OCR — verbatim text in native script.
+                val ocr = gemma.readImage(bytes).trim().trim('"')
+                if (ocr.isEmpty() || ocr.equals("(no text)", ignoreCase = true)) {
+                    val emptyTurn = placeholder.copy(
+                        transcription = "",
+                        translation = "(no text detected)"
+                    )
+                    _uiState.update { s ->
+                        val updated = s.turns.toMutableList().also {
+                            if (placeholderIndex in it.indices) it[placeholderIndex] = emptyTurn
+                        }
+                        s.copy(turns = updated, status = "Ready")
+                    }
+                    return@launch
+                }
+
+                // Step 2: detect source language. Paired mode uses the binary
+                // scorer with an image-specific tiebreak: when neither A nor
+                // B strictly wins (e.g. "ALTO" has no diacritics and isn't
+                // in any stopword list so both score 0), assume the source
+                // is B. Rationale: the dominant image-translation use case
+                // is "foreign sign → my language," not "my-language sign,"
+                // so in doubt we'd rather attempt a translation than show
+                // the untranslated text.
+                val detectedSource: Language = if (s0.isAutoDetect) {
+                    val idResult = languageId.identify(ocr)
+                    val iso = (idResult as? ExternalLanguageId.Result.Detected)?.code
+                    iso?.let { Language.fromIso639(it) } ?: Language.ENGLISH
+                } else {
+                    val scoreA = Language.scoreCandidate(ocr, s0.languageA)
+                    val scoreB = Language.scoreCandidate(ocr, s0.languageB)
+                    if (scoreA > scoreB) s0.languageA else s0.languageB
+                }
+
+                // Step 3: if source == target, OCR result IS the translation.
+                val translation: String = if (detectedSource == target) {
+                    ocr
+                } else {
+                    // Step 4: ML Kit Translate source → target. Fall back to
+                    // "translation unavailable" string if ML Kit can't handle
+                    // the pair or download fails.
+                    val translated = textTranslator.translate(
+                        text = ocr,
+                        sourceIso = detectedSource.code,
+                        targetIso = target.code
+                    )
+                    translated ?: "(translation unavailable)"
+                }
+
+                val finalTurn = placeholder.copy(
+                    transcription = ocr,
+                    translation = translation,
+                    sourceLanguage = detectedSource,
+                    sourceDisplayName = detectedSource.displayName
+                )
+                _uiState.update { s ->
+                    val updated = s.turns.toMutableList().also {
+                        if (placeholderIndex in it.indices) it[placeholderIndex] = finalTurn
+                    }
+                    s.copy(turns = updated, status = "Ready")
+                }
+            } catch (e: Exception) {
+                Log.e("TranslatorViewModel", "Image translation failed", e)
+                val errorTurn = placeholder.copy(translation = "Error: ${e.message}")
+                _uiState.update { s ->
+                    val updated = s.turns.toMutableList().also {
+                        if (placeholderIndex in it.indices) it[placeholderIndex] = errorTurn
+                    }
+                    s.copy(turns = updated, status = "Error: ${e.message}")
+                }
+            } finally {
+                _uiState.update { it.copy(isProcessing = false) }
+            }
+        }
+    }
+
+    /**
+     * Downsample the picked image to a ~256px-long-edge JPEG (~10-30 KB)
+     * for bubble preview. We don't need full resolution to recognize a
+     * photo thumbnail, and storing full bytes per turn would balloon
+     * memory on long sessions.
+     */
+    private fun makeThumbnail(raw: ByteArray): ByteArray? = try {
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
+        val targetLongEdge = 256
+        val longEdge = maxOf(opts.outWidth, opts.outHeight)
+        var sample = 1
+        while (longEdge / (sample * 2) >= targetLongEdge) sample *= 2
+        val decodeOpts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+        }
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, decodeOpts)
+            ?: return null
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, out)
+        bmp.recycle()
+        out.toByteArray()
+    } catch (t: Throwable) {
+        Log.w("TranslatorViewModel", "Thumbnail generation failed", t)
+        null
+    }
+
     override fun onCleared() {
         super.onCleared()
         gemma.close()
         tts.close()
         languageId.close()
+        textTranslator.close()
     }
 }

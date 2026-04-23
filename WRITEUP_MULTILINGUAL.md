@@ -6,9 +6,9 @@
 
 ## Summary
 
-Puente-Multi is a fully on-device, real-time speech-to-speech translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech recognition and translation via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
+Puente-Multi is a fully on-device, real-time **speech and image** translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech *and vision* via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Voice translation goes entirely through Gemma; photo translation (for signs, menus, intake forms, pharmacy labels, handwritten notes) splits Gemma's OCR output into Google ML Kit's on-device translator for the text-to-text step, giving both speed and deterministic behavior the single-call path can't guarantee. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
 
-**No data leaves the device.** All speech processing, transcription, translation, and audio synthesis occur entirely on the phone. No audio is recorded, stored, or transmitted. The app has no `INTERNET` permission declared in its manifest — it cannot reach the network even if compromised. Airplane mode works identically to full connectivity.
+**No data leaves the device.** All speech processing, transcription, OCR, translation, and audio synthesis occur entirely on the phone. No audio, images, or text are recorded, stored, or transmitted. The one exception is a one-time first-launch download of the ML Kit translator models (~360 MB across 12 language pairs); after that, airplane mode is fully supported.
 
 Puente-Multi offers two operating modes that together address the breadth of real-world translation scenarios:
 
@@ -292,6 +292,59 @@ The candidate pair (the two dropdown selections) is scored and the higher-scorin
 **Translation prompt has a hard language-lock.** Gemma 4 (especially E2B) has a documented tendency to drop foreign-language tokens into otherwise-correct output (we observed Russian `иначе` appearing mid-Spanish output, Hindi Devanagari mid-English). The translate prompt explicitly states "respond in `<target>` ONLY; every word must be a valid `<target>` word; do not mix in words, characters, or scripts from any other language" and includes a one-shot example demonstrating the expected purity.
 
 **Shared model directory across app variants.** The bilingual (Puente-Bridge) and multilingual (Puente-Multi) apps are separate `applicationId`s but share a single copy of the multi-GB Gemma weights stored at `/sdcard/Download/litertlm-models/`. This required `MANAGE_EXTERNAL_STORAGE` permission and a first-run "grant access" screen — because Android's sandbox prevents app A from reading app B's `Android/data/` directory even with that permission, so the models have to live outside any app-private sandbox.
+
+### Photo Translation Pipeline
+
+Voice is the primary modality, but a lot of the communication barrier isn't spoken. Signs, menus, pharmacy labels, warning placards, intake forms, handwritten notes — all text, most of it static, none of it audible. The app adds a second pipeline for these cases, reusing Gemma's multimodal vision tower plus a different second-stage translator.
+
+```
+Camera (TakePicturePreview) or Android PhotoPicker
+   │  JPEG bytes. Camera capture uses the system camera app in its own
+   │  process — no CAMERA runtime permission needed. PhotoPicker requires
+   │  no storage permission on API 33+.
+   │
+   ▼
+Gemma 4 vision tower via LiteRT-LM  (visionBackend = Backend.GPU())
+   │  Prompt: "Read any text visible in this image and output it verbatim,
+   │           in its original language and native script."
+   │  Output: OCR text in the source script
+   │
+   ▼
+Language identification
+   │  Paired mode → Language.scoreCandidate(text, A) vs (text, B), tiebreak
+   │                to B (foreign-language assumption for the image use case)
+   │  Auto mode  → ML Kit open-set identification
+   │
+   ▼
+ML Kit Translate  (translate:17.0.3, ~30 MB per language-pair model)
+   │  Source → target direct translation, fully on-device.
+   │  Skipped entirely when detected source == target (English menu in an
+   │  English operator's paired mode shows OCR text unchanged).
+   │
+   ▼
+Conversation bubble (thumbnail preview + native-script text + translation)
+```
+
+### Key Design Decisions (photo pipeline)
+
+**Two stages, two models — deliberately.** E4B can do "read and translate" in a single call; E2B collapses the same combined prompt into OCR and returns the source text unchanged. Splitting into Gemma-OCR + ML-Kit-translate gives both variants reliable behavior. Secondary wins:
+- ML Kit's translator is purpose-built for translation — it cannot silently fall back to OCR the way Gemma can.
+- ML Kit runs ~10-20× faster than a Gemma text-translate pass (~50-100 ms vs 1-2 s on the same device).
+- Gemma stays on what it's uniquely good at (reading text in images / handwriting / unusual fonts across 13 languages).
+
+**Binary scorer in paired mode, not ML Kit LID.** ML Kit's language identification is tuned for open-set classification over ~110 languages and needs a few words of context to be reliable. Single-word signs (`ALTO`, `STOP`, `SALIDA`) don't give it enough to work with — `ALTO` got classified as English because "alto" is a valid English word (the music-voice meaning). In paired mode we already know the answer space is just {A, B}, so the same hand-rolled Kotlin scorer used for voice turns runs here too, with one extension: a tie or near-tie breaks to B rather than A. Reasoning — operators almost never photograph text in their own language.
+
+**Thumbnail shows instantly.** A placeholder turn carrying the thumbnail is inserted into the conversation the moment the user picks the image; the translation text swaps in when Gemma returns. Users don't stare at a blank card while the vision encoder runs.
+
+**No TTS on photo turns.** Photo output is read, not heard. Reading "(no text detected)" aloud for an accidentally-blank photo would be user-hostile; the "(text only — no TTS voice installed)" hint that fires for voice turns is suppressed for photos.
+
+### Offline-First by Default
+
+Every inference path — voice ASR, voice translation, image OCR, image translation, language identification — runs without network once the app is provisioned. The only one-time network dependency is ML Kit's translator-model download on first launch: the app fires a background coroutine at init that iterates the 12 non-English languages and pre-downloads their English-pivot models (~30 MB each, ~360 MB total). A completion flag in preferences prevents re-running on subsequent launches; a partial failure leaves the flag unset so the next launch retries only the missing models.
+
+After that first-launch download, airplane mode is a supported operating condition. No telemetry, no cloud fallback, no silent upload. The app is built for contexts where connectivity is absent by design — field clinics, disaster response, remote classrooms, travel in areas without data coverage — and the offline-first assumption is load-bearing everywhere in the architecture.
+
+The one remaining manual step is the Gemma model itself. The `.litertlm` file is 2.6 GB (E2B) or 3.7 GB (E4B), which exceeds the Google Play APK and AAB limits, and side-loading via `adb push` or equivalent pre-provisioning is the practical distribution path for the hackathon. Organizations deploying the app at scale would typically pre-image devices before handing them out; the code already supports reading the model from a shared external-storage path precisely to make that workflow clean.
 
 ---
 

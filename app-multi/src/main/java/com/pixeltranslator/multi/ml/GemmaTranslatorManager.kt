@@ -132,6 +132,13 @@ class GemmaTranslatorManager(private val context: Context) {
         val config = EngineConfig(
             modelPath = modelFile.absolutePath,
             backend = Backend.GPU(),
+            // Vision encoder on GPU — unlike the E2B audio encoder (which
+            // has documented CPU-only constraints), Gemma 4's vision tower
+            // runs fine on Tensor G5's GPU via the same OpenCL path the
+            // LLM uses. NPU would be faster still but LiteRT-LM's NPU
+            // backend needs vendor-specific native libs (QNN / MediaTek
+            // APU) we don't ship for Pixel Tensor.
+            visionBackend = Backend.GPU(),
             audioBackend = Backend.CPU(),
             maxNumTokens = MAX_TOKENS
         )
@@ -229,6 +236,35 @@ class GemmaTranslatorManager(private val context: Context) {
         Log.i(TAG, "TranscribeOpen: $transcription")
         transcription
     }
+
+    /** OCR-only call. Returns the text visible in the image in its original language. */
+    suspend fun readImage(imageBytes: ByteArray): String = withContext(Dispatchers.IO) {
+        val e = engine
+            ?: throw IllegalStateException("Call initialize() before readImage()")
+
+        val promptText =
+            "Read any text visible in this image and output it verbatim, in its original language " +
+            "and native script. Output only the text. No labels, no translation, no explanations. " +
+            "If no text is visible, output exactly: (no text)."
+        val contents = Contents.of(
+            Content.ImageBytes(imageBytes),
+            Content.Text(promptText)
+        )
+        val conv = e.createConversation(ConversationConfig(samplerConfig = ASR_SAMPLER))
+        try {
+            conv.sendMessage(contents).contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+                .trim()
+                .trim('"')
+        } finally {
+            conv.close()
+            System.gc()
+            System.runFinalization()
+            delay(150)
+        }
+    }
+
 
     /**
      * Direct audio → target-language translation (Gemma 4 "AST"). One

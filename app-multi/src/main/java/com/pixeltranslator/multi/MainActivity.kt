@@ -11,9 +11,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
@@ -108,6 +111,30 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasPermission = granted
+    }
+
+    // Android PhotoPicker — no storage permission required on API 33+.
+    // Returns a content URI we hand to the ViewModel to stream into Gemma's
+    // vision encoder.
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) viewModel.processImage(uri)
+    }
+
+    // System-camera capture via TakePicturePreview. Runs the platform camera
+    // app in its own process, so we don't need the CAMERA runtime permission.
+    // Returns a thumbnail-resolution Bitmap — fine for sign/menu OCR since
+    // Gemma's vision encoder downsamples anyway. Upgrade to TakePicture +
+    // FileProvider if full-res becomes necessary.
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bmp: android.graphics.Bitmap? ->
+        if (bmp != null) {
+            val stream = java.io.ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, stream)
+            viewModel.processImageBytes(stream.toByteArray())
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -390,6 +417,38 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             }
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Image-translation entry points. Left: capture a fresh photo via
+        // the system camera. Right: pick an existing image from the gallery.
+        // Both flow into the same ViewModel → Gemma OCR+translate pipeline.
+        // Disabled while a turn is in flight so we don't race the Engine.
+        val imageButtonsEnabled =
+            uiState.isModelLoaded && !uiState.isProcessing && !uiState.isRecording
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = { cameraLauncher.launch(null) },
+                enabled = imageButtonsEnabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Take photo", maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                enabled = imageButtonsEnabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Upload photo", maxLines = 1)
+            }
+        }
+
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
@@ -659,6 +718,27 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 )
             }
             Spacer(modifier = Modifier.height(2.dp))
+            // Image-translation thumbnail (set only for photo turns). Decode
+            // from the compressed JPEG bytes stored on the turn. Small
+            // fixed-width cap so long signs don't blow out row height.
+            if (turn.thumbnailJpeg != null) {
+                val bmp = remember(turn.thumbnailJpeg) {
+                    android.graphics.BitmapFactory.decodeByteArray(
+                        turn.thumbnailJpeg, 0, turn.thumbnailJpeg.size
+                    )
+                }
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Photo source",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 160.dp),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+            }
             if (turn.transcription.isNotEmpty()) {
                 Text(
                     text = turn.transcription,
@@ -720,7 +800,10 @@ private fun ConversationBubble(turn: ConversationTurn) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (!turn.spokenAloud) {
+            // "Text only" hint only makes sense for voice turns where TTS
+            // was expected but unavailable. Image turns are always
+            // text-only by design, so showing it there is misleading noise.
+            if (!turn.spokenAloud && turn.thumbnailJpeg == null) {
                 Text(
                     text = "(text only — no TTS voice installed)",
                     style = MaterialTheme.typography.labelSmall,
