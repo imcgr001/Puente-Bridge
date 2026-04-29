@@ -41,7 +41,8 @@ data class ConversationTurn(
     val qualityUnverified: Boolean = false,   // source is outside our curated 13 (ML-Kit-only support)
     val translationSuspect: Boolean = false,  // output-side sanity check failed — translation ≠ target language
     val unexpectedEnglish: Boolean = false,   // auto-detect identified English — likely audio-encoder hallucination from a non-English speaker
-    val confusableSink: Boolean = false       // auto-detect identified a language that often absorbs its neighbors (Hindi, Russian, Arabic, etc.)
+    val confusableSink: Boolean = false,      // auto-detect identified a language that often absorbs its neighbors (Hindi, Russian, Arabic, etc.)
+    val outOfPairLanguageName: String? = null,  // photo OCR detected a language NOT in the configured A/B pair (display name)
 )
 
 /**
@@ -65,6 +66,7 @@ data class TranslatorUiState(
     val showAbout: Boolean = false,
     val isAutoDetect: Boolean = false,  // experimental: open-set lang detect, always translate to English
     val isDirectTranslation: Boolean = false,  // Gemma 4 AST: audio→target in one call, no transcription step
+    val isExplicitDirection: Boolean = false,  // paired+direct mode: show two target-specific mics
     val showSettings: Boolean = false,  // bottom-sheet-style modal overlay for mode toggles
     val pendingDirectTarget: Language? = null,  // set when a direction-specific mic was pressed in paired+direct mode
     val isProcessing: Boolean = false   // a turn is in flight (transcribe/translate/TTS); mic button should be disabled
@@ -81,6 +83,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         private const val KEY_LANG_B = "language_b_code"
         private const val KEY_MODEL = "selected_model"
         private const val KEY_DIRECT_TRANSLATION = "direct_translation"
+        private const val KEY_EXPLICIT_DIRECTION = "explicit_direction"
         private const val KEY_TRANSLATE_MODELS_PRELOADED = "translate_models_preloaded_v1"
     }
 
@@ -108,7 +111,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 languageB = b,
                 currentModel = savedModel,
                 turns = pendingTurns,
-                isDirectTranslation = prefs.getBoolean(KEY_DIRECT_TRANSLATION, false)
+                isDirectTranslation = prefs.getBoolean(KEY_DIRECT_TRANSLATION, false),
+                isExplicitDirection = prefs.getBoolean(KEY_EXPLICIT_DIRECTION, false)
             )
         }
     )
@@ -249,6 +253,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     fun setDirectTranslation(enabled: Boolean) {
         _uiState.update { it.copy(isDirectTranslation = enabled) }
         prefs.edit().putBoolean(KEY_DIRECT_TRANSLATION, enabled).apply()
+    }
+
+    fun setExplicitDirection(enabled: Boolean) {
+        _uiState.update { it.copy(isExplicitDirection = enabled) }
+        prefs.edit().putBoolean(KEY_EXPLICIT_DIRECTION, enabled).apply()
     }
 
     fun openSettings() {
@@ -469,26 +478,26 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val s = _uiState.value
 
-                // Direct-translation mode: Gemma 4 AST — audio goes in with
-                // a target-language prompt and translated text comes out in
-                // one call. ~2× faster than the transcribe+translate path,
-                // but we have no source transcription to show and must
-                // commit to the target up front. In auto-detect we pick
-                // English; in paired mode we pick B (user flips A/B to
-                // change direction).
+                // Direct-translation mode: Gemma 4 AST — audio goes in and
+                // translated text comes out in one call. Paired mode defaults
+                // to one mic via Gemma's pair-aware direct prompt; explicit
+                // direction is an optional higher-control workflow with two
+                // target-specific mics.
                 if (s.isDirectTranslation) {
-                    // Direct-mode direction:
-                    //   auto on  → always English (fixed-target AST).
-                    //   paired   → target was chosen by which mic the speaker
-                    //              pressed (A→B or B→A). pendingDirectTarget
-                    //              holds that choice; fall back to B if
-                    //              somehow unset.
-                    val directTarget: Language = if (s.isAutoDetect) {
-                        Language.ENGLISH
+                    val (directTarget, directTranslation) = if (s.isAutoDetect) {
+                        val target = s.languageA  // auto-detect target = operator's language
+                        target to gemma.translateSpeechDirect(audio, target)
+                    } else if (s.isExplicitDirection) {
+                        val target = s.pendingDirectTarget ?: s.languageB
+                        target to gemma.translateSpeechDirect(audio, target)
                     } else {
-                        s.pendingDirectTarget ?: s.languageB
+                        val result = gemma.translateSpeechDirectPaired(
+                            audio,
+                            pairA = s.languageA,
+                            pairB = s.languageB
+                        )
+                        result.target to result.translation
                     }
-                    val directTranslation = gemma.translateSpeechDirect(audio, directTarget)
                     val directSpokenAloud = tts.isAvailable(directTarget.locale)
                     // Source is whichever of the pair is NOT target. In auto
                     // mode we don't know (could be any language), so leave
@@ -531,6 +540,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 val sourceDisplayName: String
                 val target: Language
                 val transcription: String
+                var outOfPairWarning: String? = null
                 var lowConfidence = false
                 if (s.isAutoDetect) {
                     transcription = gemma.transcribeOpen(audio)
@@ -568,7 +578,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                             lowConfidence = confidence < 4
                         }
                     }
-                    target = Language.ENGLISH
+                    target = s.languageA  // auto-detect always targets the operator's language
 
                     // Handoff helper: park the detected source in B so toggling
                     // auto OFF yields a ready-to-converse pair. Only applies when
@@ -586,7 +596,31 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     source = pair.first
                     sourceDisplayName = pair.first.displayName
                     transcription = pair.second
-                    target = if (source == s.languageA) s.languageB else s.languageA
+                    target = if (s.isExplicitDirection) {
+                        s.pendingDirectTarget
+                            ?: if (source == s.languageA) s.languageB else s.languageA
+                    } else {
+                        if (source == s.languageA) s.languageB else s.languageA
+                    }
+
+                    // Advisory check: run ML Kit LID on the transcription.
+                    // The binary scorer in transcribeAndDetect is constrained
+                    // to {A, B} and will pick whichever scores higher even
+                    // when neither language actually matches. If ML Kit is
+                    // confident the language is NOT one of the configured
+                    // pair, surface a warning chip — the source/target/
+                    // translation aren't altered, the operator just sees
+                    // that the audio probably wasn't in their pair.
+                    val lidResult = languageId.identify(transcription)
+                    val lidDetected = lidResult as? ExternalLanguageId.Result.Detected
+                    val lidLang = lidDetected?.code?.let { Language.fromIso639(it) }
+                    val lidConfident = (lidDetected?.confidence ?: 0f) >= 0.5f
+                    if (lidConfident && lidDetected != null
+                        && lidLang != s.languageA && lidLang != s.languageB
+                    ) {
+                        outOfPairWarning = lidLang?.displayName
+                            ?: Language.displayNameForUnmapped(lidDetected.code)
+                    }
                 }
 
                 val translation = if (source != null && source == target) transcription
@@ -608,15 +642,15 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         && outputCheck.code != target.code
                 } else false
 
-                // Structural check: auto-detect mode exists for non-English
-                // input (operator speaks English, wants to translate what the
-                // other party said). If auto-detect identifies English, it's
-                // almost certainly Gemma's audio encoder hallucinating from
-                // unparseable foreign phonemes — we've seen this fire for
-                // Burmese ("Hello Nicole, I'm a Transcribe."), Farsi phonetic
-                // approximations, Pashto, etc. Text-level signals can't catch
-                // this because the hallucinated English IS valid English.
-                val unexpectedEnglish = s.isAutoDetect && source == Language.ENGLISH
+                // Structural check: auto-detect mode exists for non-operator
+                // input (operator wants to translate what the other party
+                // said). If auto-detect identifies the operator's own
+                // language as the source, it's almost certainly Gemma's
+                // audio encoder hallucinating from unparseable foreign
+                // phonemes — observed for Burmese, Farsi, Pashto, etc.
+                // Text-level signals can't catch this because the
+                // hallucinated text in the operator's language IS valid.
+                val unexpectedEnglish = s.isAutoDetect && source == s.languageA
 
                 // Neighbor-language confusability warning: when auto-detect
                 // lands on a "sink" language (Hindi, Russian, Arabic, etc.)
@@ -640,7 +674,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     qualityUnverified = qualityUnverified,
                     translationSuspect = translationSuspect,
                     unexpectedEnglish = unexpectedEnglish,
-                    confusableSink = confusableSink
+                    confusableSink = confusableSink,
+                    outOfPairLanguageName = outOfPairWarning
                 )
                 _uiState.update {
                     it.copy(
@@ -703,11 +738,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 makeInferenceImage(bytes, s0.currentModel)
             }
 
-            // Target follows the user's selected primary language. Auto-detect
-            // always targets English (existing rule); paired mode targets A
-            // (operator's language). Users who want the other direction swap
-            // A and B.
-            val target = if (s0.isAutoDetect) Language.ENGLISH else s0.languageA
+            // Target = operator's language (A) in both auto and paired
+            // modes. The image use case is "foreign sign → my language."
+            val target = s0.languageA
 
             // Seed a placeholder turn with the thumbnail so the user sees
             // the image while Gemma runs. We'll swap in the real translation
@@ -747,34 +780,68 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     return@launch
                 }
 
-                // Step 2: detect source language. Paired mode uses the binary
-                // scorer with an image-specific tiebreak: when neither A nor
-                // B strictly wins (e.g. "ALTO" has no diacritics and isn't
-                // in any stopword list so both score 0), assume the source
-                // is B. Rationale: the dominant image-translation use case
-                // is "foreign sign → my language," not "my-language sign,"
-                // so in doubt we'd rather attempt a translation than show
-                // the untranslated text.
-                val detectedSource: Language = if (s0.isAutoDetect) {
-                    val idResult = languageId.identify(ocr)
-                    val iso = (idResult as? ExternalLanguageId.Result.Detected)?.code
-                    iso?.let { Language.fromIso639(it) } ?: Language.ENGLISH
+                // Step 2: detect source language. We always run ML Kit LID
+                // (open-set ~110 languages) and then decide:
+                //   - Confident + in {A,B}: use LID's pick
+                //   - Confident + not in {A,B}: use LID anyway, set the
+                //     out-of-pair flag so the UI can warn. ML Kit translate
+                //     supports many languages, so the translation usually
+                //     still works — we just want to surface that the photo
+                //     wasn't in either configured language.
+                //   - Auto-detect mode: same logic, no out-of-pair concept
+                //     since there is no pair.
+                //   - Unsure: fall back to the binary A/B scorer with the
+                //     existing tiebreak-to-B rule for short signs.
+                val lidResult = languageId.identify(ocr)
+                val lidDetected = lidResult as? ExternalLanguageId.Result.Detected
+                val lidLang = lidDetected?.code?.let { Language.fromIso639(it) }
+                val lidConfident = (lidDetected?.confidence ?: 0f) >= 0.5f
+
+                val detectedSource: Language
+                val detectedSourceIso: String
+                var outOfPairWarning: String? = null
+
+                if (lidConfident && lidDetected != null) {
+                    if (s0.isAutoDetect ||
+                        lidLang == s0.languageA ||
+                        lidLang == s0.languageB
+                    ) {
+                        // Confident, and either we're in auto mode (no pair
+                        // constraint) or the detected language IS one of A/B.
+                        detectedSource = lidLang ?: target
+                        detectedSourceIso = lidDetected.code
+                    } else {
+                        // Confident but the detected language is not in the
+                        // configured pair. Use it anyway so the translation
+                        // works, and surface a warning chip.
+                        detectedSource = lidLang ?: target
+                        detectedSourceIso = lidDetected.code
+                        outOfPairWarning = lidLang?.displayName
+                            ?: Language.displayNameForUnmapped(lidDetected.code)
+                    }
+                } else if (s0.isAutoDetect) {
+                    // ML Kit was unsure and we're in auto mode — fall back
+                    // to the broad-scorer pick.
+                    val (detected, _) = Language.detectFromAllLanguagesWithConfidence(ocr)
+                    detectedSource = detected
+                    detectedSourceIso = detected.code
                 } else {
+                    // Paired mode + LID unsure — binary A/B scorer with the
+                    // tiebreak-to-B for short signs (e.g. "ALTO").
                     val scoreA = Language.scoreCandidate(ocr, s0.languageA)
                     val scoreB = Language.scoreCandidate(ocr, s0.languageB)
-                    if (scoreA > scoreB) s0.languageA else s0.languageB
+                    val pick = if (scoreA > scoreB) s0.languageA else s0.languageB
+                    detectedSource = pick
+                    detectedSourceIso = pick.code
                 }
 
                 // Step 3: if source == target, OCR result IS the translation.
-                val translation: String = if (detectedSource == target) {
+                val translation: String = if (detectedSourceIso.equals(target.code, ignoreCase = true)) {
                     ocr
                 } else {
-                    // Step 4: ML Kit Translate source → target. Fall back to
-                    // "translation unavailable" string if ML Kit can't handle
-                    // the pair or download fails.
                     val translated = textTranslator.translate(
                         text = ocr,
-                        sourceIso = detectedSource.code,
+                        sourceIso = detectedSourceIso,
                         targetIso = target.code
                     )
                     translated ?: "(translation unavailable)"
@@ -784,7 +851,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     transcription = ocr,
                     translation = translation,
                     sourceLanguage = detectedSource,
-                    sourceDisplayName = detectedSource.displayName
+                    sourceDisplayName = outOfPairWarning ?: detectedSource.displayName,
+                    outOfPairLanguageName = outOfPairWarning
                 )
                 _uiState.update { s ->
                     val updated = s.turns.toMutableList().also {

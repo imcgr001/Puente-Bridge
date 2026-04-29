@@ -34,8 +34,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.Card
@@ -187,10 +189,15 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
 
     if (uiState.showSettings) {
         SettingsScreen(
+            strings = Strings.forLanguage(uiState.languageA),
+            currentLanguage = uiState.languageA,
+            onLanguageSelect = viewModel::setLanguageA,
             isAutoDetect = uiState.isAutoDetect,
             isDirectTranslation = uiState.isDirectTranslation,
+            isExplicitDirection = uiState.isExplicitDirection,
             onSetAutoDetect = viewModel::setAutoDetect,
             onSetDirectTranslation = viewModel::setDirectTranslation,
+            onSetExplicitDirection = viewModel::setExplicitDirection,
             onDismiss = viewModel::closeSettings
         )
         return
@@ -214,11 +221,41 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             .padding(horizontal = 16.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = strings.title,
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
+        // Top action row — utility navigation. Sits above the model
+        // selector because users tap About / Settings / Clear less often
+        // than they switch model variants, but those actions live in the
+        // same "chrome" zone above the conversation surface.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = viewModel::showAbout,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(strings.aboutButton, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = viewModel::showDisclaimer,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(strings.disclaimerButton, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = viewModel::openSettings,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(strings.settingsButton, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = viewModel::clearConversation,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(strings.clearButton, maxLines = 1)
+            }
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -248,112 +285,46 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = viewModel::showAbout,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(strings.aboutButton, maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = viewModel::showDisclaimer,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(strings.disclaimerButton, maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = viewModel::openSettings,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Settings", maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = viewModel::clearConversation,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(strings.clearButton, maxLines = 1)
-            }
-        }
-
+        // Status row only renders when something is actually happening or
+        // there's an error to surface. The idle "Ready" message was visual
+        // noise wedged between the action rows; the hold-to-speak label
+        // below the mic already conveys idle state contextually.
+        val showStatus = uiState.isProcessing ||
+            uiState.status.startsWith("Error", ignoreCase = true)
         Spacer(modifier = Modifier.height(4.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (uiState.isProcessing) {
-                androidx.compose.material3.CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-            }
-            Text(
-                text = localizeStatus(uiState.status, strings),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Card(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
+                .height(20.dp),
+            contentAlignment = Alignment.Center
         ) {
-            val scrollState = rememberScrollState()
-            LaunchedEffect(uiState.turns.size) {
-                scrollState.animateScrollTo(scrollState.maxValue)
-            }
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-                    .verticalScroll(scrollState)
-            ) {
-                if (uiState.turns.isEmpty()) {
-                    Text(
-                        text = if (uiState.isAutoDetect) {
-                            "Auto-detect mode.\nSpeak any supported language — translation will be in English."
-                        } else {
-                            strings.emptyPlaceholder(
-                                uiState.languageA.nativeName,
-                                uiState.languageB.nativeName
-                            )
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    uiState.turns.forEachIndexed { index, turn ->
-                        ConversationBubble(turn)
-                        if (index < uiState.turns.lastIndex) {
-                            Spacer(modifier = Modifier.height(16.dp))
-                        }
+            if (showStatus) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (uiState.isProcessing) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                     }
+                    Text(
+                        text = localizeStatus(uiState.status, strings),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Language dropdowns on their own row, side by side. Keeping them
-        // separate from the mic row lets the mic area breathe and keeps
-        // the dual-mic (paired+direct) layout symmetric.
+        // Language dropdowns sit directly above the conversation card —
+        // selection context is most relevant when reading the turns they
+        // govern, so co-locating them removes a glance up to a header.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -380,23 +351,76 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             )
         }
 
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            val scrollState = rememberScrollState()
+            // Key on the full turns list (not just its size) so content
+            // mutations trigger a scroll too. The photo pipeline seeds a
+            // placeholder turn with the thumbnail, then swaps in the
+            // transcription + translation when inference returns; the list
+            // size stays the same but the rendered content grows, so we
+            // need the re-scroll on that mutation to keep the user in view.
+            LaunchedEffect(uiState.turns) {
+                scrollState.animateScrollTo(scrollState.maxValue)
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .verticalScroll(scrollState)
+            ) {
+                if (uiState.turns.isEmpty()) {
+                    Text(
+                        text = if (uiState.isAutoDetect) {
+                            "Auto-detect mode.\nSpeak any supported language — translation will be in ${uiState.languageA.displayName}."
+                        } else {
+                            strings.emptyPlaceholder(
+                                uiState.languageA.nativeName,
+                                uiState.languageB.nativeName
+                            )
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    uiState.turns.forEachIndexed { index, turn ->
+                        ConversationBubble(turn, strings)
+                        if (index < uiState.turns.lastIndex) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Mic row on its own. Single centered mic in normal mode; in
-        // paired+direct mode, two direction-specific mics flank the row
-        // edges (left = A→B, right = B→A) so the operator and speaker
-        // each have an obvious button on their side of the phone.
-        val showDualMic = uiState.isDirectTranslation && !uiState.isAutoDetect
+        // Mic row on its own. Paired mode defaults to one mic. Explicit
+        // direction restores two target-specific mics for higher-control
+        // workflows, with or without direct translation.
+        val showDualMic = uiState.isExplicitDirection && !uiState.isAutoDetect
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = if (showDualMic) Arrangement.SpaceBetween else Arrangement.Center
+            horizontalArrangement = if (showDualMic) Arrangement.spacedBy(8.dp) else Arrangement.Center
         ) {
             if (showDualMic) {
                 PushToTalkButton(
                     isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageB,
                     enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
                     label = "${uiState.languageA.code.uppercase()}→${uiState.languageB.code.uppercase()}",
+                    wide = true,
+                    modifier = Modifier.weight(1f),
                     onPressStart = { viewModel.onPushToTalkPressed(uiState.languageB) },
                     onPressEnd = viewModel::onPushToTalkReleased
                 )
@@ -404,6 +428,8 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                     isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageA,
                     enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
                     label = "${uiState.languageB.code.uppercase()}→${uiState.languageA.code.uppercase()}",
+                    wide = true,
+                    modifier = Modifier.weight(1f),
                     onPressStart = { viewModel.onPushToTalkPressed(uiState.languageA) },
                     onPressEnd = viewModel::onPushToTalkReleased
                 )
@@ -434,7 +460,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 enabled = imageButtonsEnabled,
                 modifier = Modifier.weight(1f)
             ) {
-                Text("Take photo", maxLines = 1)
+                Text(strings.takePhotoButton, maxLines = 1)
             }
             OutlinedButton(
                 onClick = {
@@ -445,7 +471,7 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 enabled = imageButtonsEnabled,
                 modifier = Modifier.weight(1f)
             ) {
-                Text("Upload photo", maxLines = 1)
+                Text(strings.uploadPhotoButton, maxLines = 1)
             }
         }
 
@@ -472,12 +498,22 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
  */
 @Composable
 private fun SettingsScreen(
+    strings: UiStrings,
+    currentLanguage: Language,
+    onLanguageSelect: (Language) -> Unit,
     isAutoDetect: Boolean,
     isDirectTranslation: Boolean,
+    isExplicitDirection: Boolean,
     onSetAutoDetect: (Boolean) -> Unit,
     onSetDirectTranslation: (Boolean) -> Unit,
+    onSetExplicitDirection: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
+    // Outer column: header + scrollable middle + Done button. The Done
+    // button stays anchored at the bottom regardless of how much
+    // instructions content the user is reading. Middle scrolls so the
+    // localized instructions don't push the toggles or the button off
+    // screen on shorter devices or with longer translations.
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -485,33 +521,97 @@ private fun SettingsScreen(
             .padding(horizontal = 24.dp, vertical = 24.dp)
     ) {
         Text(
-            text = "Settings",
+            text = strings.settingsButton,
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(24.dp))
 
-        SettingRow(
-            checked = isAutoDetect,
-            onCheckedChange = onSetAutoDetect,
-            title = "Auto-detect language",
-            subtitle = "Open-set language identification. Translates anything spoken into English — text only, no speech."
-        )
-        Spacer(modifier = Modifier.height(20.dp))
-        SettingRow(
-            checked = isDirectTranslation,
-            onCheckedChange = onSetDirectTranslation,
-            title = "Direct translation",
-            subtitle = "Faster audio → translation in one step, no transcription shown. In paired mode, two direction-specific mics replace the single mic."
-        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // App language picker — drives the UI chrome AND the target
+            // language for auto-detect mode. Same value as the A dropdown
+            // on the main screen; placing a copy here makes it more
+            // discoverable as the "app language" concept rather than
+            // just the A side of a paired conversation.
+            Text(
+                text = strings.appLanguageTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = strings.appLanguageSubtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            LanguageDropdown(
+                current = currentLanguage,
+                disabled = null,
+                ttsAvailable = true,
+                onSelect = onLanguageSelect,
+                modifier = Modifier.fillMaxWidth()
+            )
 
-        Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(20.dp))
+
+            SettingRow(
+                checked = isAutoDetect,
+                onCheckedChange = onSetAutoDetect,
+                title = strings.autoDetectTitle,
+                subtitle = strings.autoDetectSubtitle
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            SettingRow(
+                checked = isDirectTranslation,
+                onCheckedChange = onSetDirectTranslation,
+                title = strings.directTranslationTitle,
+                subtitle = strings.directTranslationSubtitle
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            SettingRow(
+                checked = isExplicitDirection,
+                onCheckedChange = onSetExplicitDirection,
+                title = strings.explicitDirectionTitle,
+                subtitle = if (isAutoDetect) {
+                    strings.explicitDirectionDisabledSubtitle
+                } else {
+                    strings.explicitDirectionSubtitle
+                },
+                enabled = !isAutoDetect
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                text = strings.instructionsTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = strings.instructionsBody,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 20.sp
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+        }
 
         androidx.compose.material3.Button(
             onClick = onDismiss,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Done")
+            Text(strings.closeButton)
         }
     }
 }
@@ -521,22 +621,30 @@ private fun SettingRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     title: String,
-    subtitle: String
+    subtitle: String,
+    enabled: Boolean = true
 ) {
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         androidx.compose.material3.Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
         )
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                color = contentColor
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
@@ -569,7 +677,7 @@ private fun localizeStatus(raw: String, s: UiStrings): String = when {
 @Composable
 private fun LanguageDropdown(
     current: Language,
-    disabled: Language,
+    disabled: Language?,
     ttsAvailable: Boolean,
     onSelect: (Language) -> Unit,
     modifier: Modifier = Modifier,
@@ -591,8 +699,12 @@ private fun LanguageDropdown(
                 )
             ) {
                 // English name on top, native name below (when different).
-                // Two-line stack avoids squeezing long dual-name strings like
-                // "Vietnamese · Tiếng Việt" horizontally into a narrow slot.
+                // Always render the second line — when the native name matches
+                // the English one (e.g. "English" / "English"), use a blank
+                // placeholder so the button height stays consistent across
+                // languages. Otherwise English's button collapses to half
+                // the height of every other language's, which reads as a
+                // glitch when scanning the row.
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -602,13 +714,11 @@ private fun LanguageDropdown(
                         fontSize = 12.sp,
                         maxLines = 1
                     )
-                    if (current.displayName != current.nativeName) {
-                        Text(
-                            current.nativeName,
-                            fontSize = 10.sp,
-                            maxLines = 1
-                        )
-                    }
+                    Text(
+                        text = if (current.displayName != current.nativeName) current.nativeName else " ",
+                        fontSize = 10.sp,
+                        maxLines = 1
+                    )
                 }
                 Icon(Icons.Default.ArrowDropDown, contentDescription = null)
             }
@@ -621,7 +731,7 @@ private fun LanguageDropdown(
                         text = {
                             Text("${lang.displayName}  —  ${lang.nativeName}")
                         },
-                        enabled = lang != disabled,
+                        enabled = disabled == null || lang != disabled,
                         onClick = {
                             onSelect(lang)
                             expanded = false
@@ -646,7 +756,9 @@ private fun PushToTalkButton(
     enabled: Boolean,
     onPressStart: () -> Unit,
     onPressEnd: () -> Unit,
-    label: String? = null
+    label: String? = null,
+    wide: Boolean = false,
+    modifier: Modifier = Modifier
 ) {
     val buttonColor = when {
         !enabled -> MaterialTheme.colorScheme.surfaceVariant
@@ -660,9 +772,15 @@ private fun PushToTalkButton(
     }
 
     Box(
-        modifier = Modifier
-            .size(96.dp)
-            .background(buttonColor, CircleShape)
+        modifier = modifier
+            .then(
+                if (wide) Modifier.height(76.dp)
+                else Modifier.size(96.dp)
+            )
+            .background(
+                color = buttonColor,
+                shape = if (wide) RoundedCornerShape(36.dp) else CircleShape
+            )
             .then(
                 if (enabled) {
                     Modifier.pointerInput(Unit) {
@@ -687,13 +805,13 @@ private fun PushToTalkButton(
             },
             color = textColor,
             fontWeight = FontWeight.Bold,
-            fontSize = if (label != null) 13.sp else 16.sp
+            fontSize = if (label != null) 14.sp else 16.sp
         )
     }
 }
 
 @Composable
-private fun ConversationBubble(turn: ConversationTurn) {
+private fun ConversationBubble(turn: ConversationTurn, strings: UiStrings) {
     SelectionContainer {
         Column(modifier = Modifier.fillMaxWidth()) {
             val sourceLabel = "${turn.sourceDisplayName} → ${turn.targetLanguage.displayName}"
@@ -702,6 +820,17 @@ private fun ConversationBubble(turn: ConversationTurn) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // Photo turn whose detected language wasn't in the configured
+            // pair. Translation usually still works (ML Kit covers ~59
+            // languages including non-curated ones), but flag it so the
+            // user knows the source isn't what they had configured.
+            if (turn.outOfPairLanguageName != null) {
+                Text(
+                    text = strings.outOfPairWarning(turn.outOfPairLanguageName),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             // Direct-translation turns have no transcription step and thus
             // no source-language detection — the "not a conversation pair
             // language" warning would be misleading there. Suppress it on
