@@ -13,6 +13,8 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import com.pixeltranslator.multi.ui.Language
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
@@ -37,19 +39,22 @@ class GemmaTranslatorManager(private val context: Context) {
         val filename: String,
         val label: String,           // technical, used in status messages
         val friendlyLabel: String,   // user-facing chip label
-        val sizeLabel: String        // GB, shown as subtext under the chip
+        val sizeLabel: String,       // GB, shown as subtext under the chip
+        val maxTokens: Int           // LiteRT-LM KV/cache budget
     ) {
         E2B(
             "gemma-4-E2B-it.litertlm",
             "Gemma 4 E2B (2.6 GB)",
             "Faster",
-            "2.6 GB"
+            "2.6 GB",
+            1536
         ),
         E4B(
             "gemma-4-E4B-it.litertlm",
             "Gemma 4 E4B (3.7 GB)",
             "Higher Accuracy",
-            "3.7 GB"
+            "3.7 GB",
+            1024
         )
     }
 
@@ -77,7 +82,6 @@ class GemmaTranslatorManager(private val context: Context) {
             temperature = 0.3,
             seed = 0
         )
-        private const val MAX_TOKENS = 1536
         /**
          * Shared model directory used by both this app and the bilingual app
          * so they don't each need their own multi-GB copy of the weights.
@@ -91,6 +95,7 @@ class GemmaTranslatorManager(private val context: Context) {
     }
 
     private var engine: Engine? = null
+    private val inferenceMutex = Mutex()
     var currentModel: ModelSize? = null
         private set
 
@@ -132,15 +137,13 @@ class GemmaTranslatorManager(private val context: Context) {
         val config = EngineConfig(
             modelPath = modelFile.absolutePath,
             backend = Backend.GPU(),
-            // Vision encoder on GPU — unlike the E2B audio encoder (which
-            // has documented CPU-only constraints), Gemma 4's vision tower
-            // runs fine on Tensor G5's GPU via the same OpenCL path the
-            // LLM uses. NPU would be faster still but LiteRT-LM's NPU
-            // backend needs vendor-specific native libs (QNN / MediaTek
-            // APU) we don't ship for Pixel Tensor.
-            visionBackend = Backend.GPU(),
+            // Keep E4B's optional vision tower off the GPU. The common path is
+            // speech; reserving GPU memory for photo OCR at startup pushes E4B
+            // close enough to the native allocator limit that ART's recompiler
+            // thread can fail mmap() and abort the process.
+            visionBackend = if (model == ModelSize.E4B) Backend.CPU() else Backend.GPU(),
             audioBackend = Backend.CPU(),
-            maxNumTokens = MAX_TOKENS
+            maxNumTokens = model.maxTokens
         )
         val e = Engine(config)
         e.initialize()
@@ -163,7 +166,7 @@ class GemmaTranslatorManager(private val context: Context) {
         pcmAudio: ByteArray,
         candidateA: Language,
         candidateB: Language
-    ): Pair<Language, String> = withContext(Dispatchers.IO) {
+    ): Pair<Language, String> = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before transcribeAndDetect()")
 
@@ -194,7 +197,7 @@ class GemmaTranslatorManager(private val context: Context) {
                 "B=${candidateB.code} score=${Language.scoreCandidate(transcription, candidateB)})"
         )
         detected to transcription
-    }
+    } }
 
     /**
      * Open-detect transcription: no language hint given to the audio encoder.
@@ -207,7 +210,7 @@ class GemmaTranslatorManager(private val context: Context) {
      * failure mode). The reward is honest transcription for any of the 13
      * supported languages without a pre-selection step.
      */
-    suspend fun transcribeOpen(pcmAudio: ByteArray): String = withContext(Dispatchers.IO) {
+    suspend fun transcribeOpen(pcmAudio: ByteArray): String = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before transcribeOpen()")
 
@@ -235,10 +238,10 @@ class GemmaTranslatorManager(private val context: Context) {
         }
         Log.i(TAG, "TranscribeOpen: $transcription")
         transcription
-    }
+    } }
 
     /** OCR-only call. Returns the text visible in the image in its original language. */
-    suspend fun readImage(imageBytes: ByteArray): String = withContext(Dispatchers.IO) {
+    suspend fun readImage(imageBytes: ByteArray): String = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before readImage()")
 
@@ -263,7 +266,7 @@ class GemmaTranslatorManager(private val context: Context) {
             System.runFinalization()
             delay(150)
         }
-    }
+    } }
 
 
     /**
@@ -280,7 +283,7 @@ class GemmaTranslatorManager(private val context: Context) {
     suspend fun translateSpeechDirect(
         pcmAudio: ByteArray,
         target: Language
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before translateSpeechDirect()")
 
@@ -305,7 +308,7 @@ class GemmaTranslatorManager(private val context: Context) {
             System.runFinalization()
             delay(150)
         }
-    }
+    } }
 
     /**
      * Paired-mode direct translation with Gemma-internal language ID: Gemma
@@ -323,7 +326,7 @@ class GemmaTranslatorManager(private val context: Context) {
         pcmAudio: ByteArray,
         pairA: Language,
         pairB: Language
-    ): DirectResult = withContext(Dispatchers.IO) {
+    ): DirectResult = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before translateSpeechDirectPaired()")
 
@@ -375,7 +378,7 @@ class GemmaTranslatorManager(private val context: Context) {
             target = detectedLang ?: pairB,
             translation = translation
         )
-    }
+    } }
 
     data class DirectResult(val target: Language, val translation: String)
 
@@ -399,7 +402,7 @@ class GemmaTranslatorManager(private val context: Context) {
         text: String,
         sourceDisplayName: String?,
         target: Language
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) { inferenceMutex.withLock {
         val e = engine
             ?: throw IllegalStateException("Call initialize() before translate()")
 
@@ -416,7 +419,7 @@ class GemmaTranslatorManager(private val context: Context) {
             System.runFinalization()
             delay(150)
         }
-    }
+    } }
 
     /**
      * Builds the transcribe prompt. Gemma 4 E2B/E4B supports BOTH ASR

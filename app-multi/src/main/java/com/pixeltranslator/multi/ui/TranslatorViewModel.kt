@@ -125,7 +125,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         tryLoadModels()
-        preloadTranslateModelsOnce()
     }
 
     /**
@@ -140,7 +139,13 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
      * failures don't block the others or retry automatically — reinstall
      * or clear this flag to rerun.
      */
-    private fun preloadTranslateModelsOnce() {
+    private fun preloadTranslateModelsOnceIfSafe() {
+        // E4B leaves little native-memory headroom. Preloading 12 ML Kit
+        // translators at startup is a background convenience, not required for
+        // speech translation, and it competes with LiteRT-LM's largest mmap()
+        // window. E4B users still get lazy download/on-device caching on first
+        // photo translation.
+        if (_uiState.value.currentModel == ModelSize.E4B) return
         if (prefs.getBoolean(KEY_TRANSLATE_MODELS_PRELOADED, false)) return
         viewModelScope.launch {
             val isoCodes = Language.entries.map { it.code }
@@ -180,6 +185,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 tts.initialize()
                 refreshTtsAvailability()
                 _uiState.update { it.copy(status = "Ready", isModelLoaded = true) }
+                preloadTranslateModelsOnceIfSafe()
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Model load failed: ${e.message}") }
             } finally {
@@ -693,6 +699,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
             if (!s0.isModelLoaded || s0.isProcessing) return@launch
 
             val thumb = withContext(Dispatchers.IO) { makeThumbnail(bytes) }
+            val inferenceImage = withContext(Dispatchers.IO) {
+                makeInferenceImage(bytes, s0.currentModel)
+            }
 
             // Target follows the user's selected primary language. Auto-detect
             // always targets English (existing rule); paired mode targets A
@@ -723,7 +732,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
             try {
                 // Step 1: Gemma OCR — verbatim text in native script.
-                val ocr = gemma.readImage(bytes).trim().trim('"')
+                val ocr = gemma.readImage(inferenceImage).trim().trim('"')
                 if (ocr.isEmpty() || ocr.equals("(no text)", ignoreCase = true)) {
                     val emptyTurn = placeholder.copy(
                         transcription = "",
@@ -825,6 +834,43 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     } catch (t: Throwable) {
         Log.w("TranslatorViewModel", "Thumbnail generation failed", t)
         null
+    }
+
+    /**
+     * Resize camera/gallery images before passing them to LiteRT-LM. OCR does
+     * not need a full Pixel camera frame, and native vision preprocessing can
+     * otherwise allocate large transient buffers next to the resident E4B model.
+     */
+    private fun makeInferenceImage(raw: ByteArray, model: ModelSize): ByteArray = try {
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+        val targetLongEdge = when (model) {
+            // E2B has enough headroom to keep more detail for dense documents.
+            ModelSize.E2B -> 2560
+            // E4B is the memory-sensitive path. 1920px still preserves useful
+            // OCR detail but avoids full Pixel camera frame allocations next
+            // to the resident 3.7 GB model.
+            ModelSize.E4B -> 1920
+        }
+        val longEdge = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longEdge <= 0 || longEdge <= targetLongEdge) return raw
+
+        var sample = 1
+        while (longEdge / (sample * 2) >= targetLongEdge) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+        }
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
+            ?: return raw
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        bmp.recycle()
+        out.toByteArray()
+    } catch (t: Throwable) {
+        Log.w("TranslatorViewModel", "Inference image resize failed", t)
+        raw
     }
 
     override fun onCleared() {
