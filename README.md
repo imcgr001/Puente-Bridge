@@ -209,4 +209,6 @@ Recommended public submission package:
 
 ## License
 
-Add the final project license before public submission. Gemma model usage is governed by the applicable Gemma terms/license for the model files you use.
+This project is licensed under the Apache License 2.0. See `LICENSE`.
+
+Gemma model files are not included in this repository and are governed by their own model terms.
