@@ -7,7 +7,6 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.tasks.await
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Thin wrapper around Google ML Kit's on-device Translate client.
@@ -32,14 +31,26 @@ class TextTranslator {
 
     companion object {
         private const val TAG = "TextTranslator"
+        // Maximum live Translator instances at once. Each holds the loaded
+        // model in memory (~30 MB). Holding all 12 simultaneously was a
+        // documented contributor to native OOM crashes alongside E4B —
+        // capping at 2 keeps the active pair plus one warm fallback,
+        // evicts the rest. Disk cache is untouched, so re-instantiating
+        // a previously-evicted pair is just a constructor call (no
+        // re-download).
+        private const val MAX_LIVE_TRANSLATORS = 2
     }
 
-    private val translators = ConcurrentHashMap<Pair<String, String>, Translator>()
+    // LinkedHashMap ordered by access for LRU eviction.
+    private val translators = linkedMapOf<Pair<String, String>, Translator>()
 
     /**
      * Translate [text] from [sourceIso] to [targetIso] (ISO 639-1 codes).
      * Returns null if the pair isn't supported by ML Kit or the model
      * download / translation itself fails — caller should fall back.
+     *
+     * Lazy-loads the pair's Translator on first use and evicts least-
+     * recently-used Translators beyond [MAX_LIVE_TRANSLATORS].
      */
     suspend fun translate(text: String, sourceIso: String, targetIso: String): String? {
         if (text.isBlank()) return text
@@ -54,20 +65,9 @@ class TextTranslator {
             return null
         }
 
-        val translator = translators.getOrPut(sourceIso.lowercase() to targetIso.lowercase()) {
-            Translation.getClient(
-                TranslatorOptions.Builder()
-                    .setSourceLanguage(src)
-                    .setTargetLanguage(tgt)
-                    .build()
-            )
-        }
+        val translator = obtainTranslator(sourceIso.lowercase(), targetIso.lowercase(), src, tgt)
 
         return try {
-            // Download the language pair model if we don't already have it.
-            // DownloadConditions is empty → allow any network, no charging
-            // requirement. First-call latency can be a few seconds; cached
-            // calls are ~50-100 ms.
             translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
             translator.translate(text).await()
         } catch (t: Throwable) {
@@ -76,16 +76,45 @@ class TextTranslator {
         }
     }
 
+    @Synchronized
+    private fun obtainTranslator(
+        srcKey: String,
+        tgtKey: String,
+        src: String,
+        tgt: String
+    ): Translator {
+        val key = srcKey to tgtKey
+        translators.remove(key)?.let {
+            translators[key] = it  // refresh LRU position
+            return it
+        }
+        val newTranslator = Translation.getClient(
+            TranslatorOptions.Builder()
+                .setSourceLanguage(src)
+                .setTargetLanguage(tgt)
+                .build()
+        )
+        translators[key] = newTranslator
+        // Evict oldest until under cap. Each .close() releases the model's
+        // native memory. Disk cache stays — re-instantiating later is cheap.
+        while (translators.size > MAX_LIVE_TRANSLATORS) {
+            val eldest = translators.entries.iterator().next()
+            translators.remove(eldest.key)?.close()
+            Log.i(TAG, "Evicted translator ${eldest.key} (over cap)")
+        }
+        return newTranslator
+    }
+
     /**
-     * Download ML Kit translator models for every language in [isoCodes]
-     * paired with English. ML Kit's translate models pivot through English,
-     * so bidirectional coverage for a pair (X↔Y) is achieved by having the
-     * English↔X and English↔Y models present.
+     * Pre-download ML Kit translator models to disk for every language in
+     * [isoCodes] paired with English. **Does not keep the Translator
+     * instances alive** — each is closed immediately after download to
+     * release native memory. Subsequent translate() calls re-instantiate
+     * cheaply from the disk cache.
      *
-     * Intended to run once at app init so subsequent translations are fully
-     * offline. Each model is ~30 MB; 12 non-English models totals ~360 MB
-     * of one-time downloads. Progress is per-language; a single failure
-     * doesn't block the others.
+     * Run once at first launch so the app is fully offline-capable; the
+     * runtime memory cost is bounded by [MAX_LIVE_TRANSLATORS] regardless
+     * of how many models are on disk.
      *
      * @return the number of models successfully downloaded.
      */
@@ -94,25 +123,26 @@ class TextTranslator {
         for (iso in isoCodes.distinct()) {
             if (iso.equals("en", ignoreCase = true)) continue
             val tag = TranslateLanguage.fromLanguageTag(iso.lowercase()) ?: continue
-            val translator = translators.getOrPut("en" to iso.lowercase()) {
-                Translation.getClient(
-                    TranslatorOptions.Builder()
-                        .setSourceLanguage(TranslateLanguage.ENGLISH)
-                        .setTargetLanguage(tag)
-                        .build()
-                )
-            }
+            val transient = Translation.getClient(
+                TranslatorOptions.Builder()
+                    .setSourceLanguage(TranslateLanguage.ENGLISH)
+                    .setTargetLanguage(tag)
+                    .build()
+            )
             try {
-                translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
-                Log.i(TAG, "Preloaded EN↔$iso model")
+                transient.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+                Log.i(TAG, "Preloaded EN↔$iso model (download only, instance closed)")
                 success++
             } catch (t: Throwable) {
                 Log.w(TAG, "Preload EN↔$iso failed", t)
+            } finally {
+                transient.close()
             }
         }
         return success
     }
 
+    @Synchronized
     fun close() {
         translators.values.forEach { it.close() }
         translators.clear()
