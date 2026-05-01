@@ -957,10 +957,9 @@ private fun ConversationBubble(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            // Photo turn whose detected language wasn't in the configured
-            // pair. Translation usually still works (ML Kit covers ~59
-            // languages including non-curated ones), but flag it so the
-            // user knows the source isn't what they had configured.
+            // Turn whose detected language wasn't in the configured pair.
+            // Translation may still work through Gemma, but flag it so the
+            // user knows the source isn't what they configured.
             if (turn.outOfPairLanguageName != null) {
                 Text(
                     text = strings.outOfPairWarning(turn.outOfPairLanguageName),
@@ -1033,7 +1032,7 @@ private fun ConversationBubble(
                 )
             }
             if (turn.translationSuspect) {
-                // Output-side ML Kit check disagreed with the target language.
+                // Output-side language check disagreed with the target language.
                 Text(
                     text = "(output sanity check failed — translation may not be correct)",
                     style = MaterialTheme.typography.labelSmall,

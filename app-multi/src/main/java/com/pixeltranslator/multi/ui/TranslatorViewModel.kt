@@ -1,13 +1,16 @@
 package com.pixeltranslator.multi.ui
 
+import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
 import android.os.Environment
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.AndroidViewModel
 import org.json.JSONArray
@@ -17,10 +20,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import androidx.lifecycle.viewModelScope
 import com.pixeltranslator.multi.audio.AudioCaptureManager
-import com.pixeltranslator.multi.ml.ExternalLanguageId
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager
 import com.pixeltranslator.multi.ml.GemmaTranslatorManager.ModelSize
-import com.pixeltranslator.multi.ml.TextTranslator
 import com.pixeltranslator.multi.ml.TtsManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,6 +78,8 @@ data class TranslatorUiState(
 class TranslatorViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
+        private const val TAG = "TranslatorViewModel"
+
         // v2: invalidated the earlier prefs store after a stale Arabic value
         // was observed surviving reinstalls via Android's auto-backup. Bump
         // this suffix whenever we need to force a fresh default pair.
@@ -87,14 +90,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         private const val KEY_DIRECT_TRANSLATION = "direct_translation"
         private const val KEY_EXPLICIT_DIRECTION = "explicit_direction"
         private const val KEY_AUTO_STOP_MIC = "auto_stop_mic"
-        private const val KEY_TRANSLATE_MODELS_PRELOADED = "translate_models_preloaded_v1"
     }
 
     private val audioCapture = AudioCaptureManager()
     private val gemma = GemmaTranslatorManager(application)
     private val tts = TtsManager(application)
-    private val languageId = ExternalLanguageId()
-    private val textTranslator = TextTranslator()
     private val prefs = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val pendingTurnsFile = File(application.cacheDir, "pending_turns.json")
 
@@ -136,38 +136,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * On first app launch, pre-download ML Kit translator models for every
-     * supported language paired with English. ML Kit pivots through English,
-     * so 12 downloads cover any-to-any translation via the pivot. Once
-     * complete, the app can translate fully offline — critical for the
-     * disaster-response and field-clinic scenarios the app is designed for.
-     *
-     * Fire-and-forget on a background coroutine; a completion flag in prefs
-     * prevents re-running on subsequent launches. Individual download
-     * failures don't block the others or retry automatically — reinstall
-     * or clear this flag to rerun.
-     */
-    private fun preloadTranslateModelsOnceIfSafe() {
-        // E4B leaves little native-memory headroom. Preloading 12 ML Kit
-        // translators at startup is a background convenience, not required for
-        // speech translation, and it competes with LiteRT-LM's largest mmap()
-        // window. E4B users still get lazy download/on-device caching on first
-        // photo translation.
-        if (_uiState.value.currentModel == ModelSize.E4B) return
-        if (prefs.getBoolean(KEY_TRANSLATE_MODELS_PRELOADED, false)) return
-        viewModelScope.launch {
-            val isoCodes = Language.entries.map { it.code }
-            val ok = textTranslator.preloadEnglishPivotModels(isoCodes)
-            if (ok >= isoCodes.count { !it.equals("en", ignoreCase = true) }) {
-                prefs.edit().putBoolean(KEY_TRANSLATE_MODELS_PRELOADED, true).apply()
-                Log.i("TranslatorViewModel", "All ML Kit translate models preloaded")
-            } else {
-                Log.w("TranslatorViewModel", "Translate preload partial: $ok models downloaded")
-            }
-        }
-    }
-
-    /**
      * Re-check storage permission and (re)load models. Called from init and
      * from the MainActivity after the user returns from the all-files-access
      * settings page. No-op if already loaded OR if a load is already in flight.
@@ -198,7 +166,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         isModelLoaded = true
                     )
                 }
-                preloadTranslateModelsOnceIfSafe()
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Model load failed: ${e.message}") }
             } finally {
@@ -561,13 +528,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     return
                 }
 
-                // Two paths: open auto-detect (ML Kit language ID across ~110
-                // languages, always translate to English) vs. binary A/B-anchored
-                // detection (paired-mode production default). In auto-detect,
-                // [source] can be null when the detected language isn't one of
-                // our curated 13 — we still have a display name for the UI,
-                // and Gemma can translate most recognized languages to English.
-                val source: Language?
+                // Two paths: broad Kotlin language scoring for auto-detect vs.
+                // binary A/B-anchored detection for paired mode. Gemma remains
+                // responsible for transcription and translation in both paths.
+                val source: Language
                 val sourceDisplayName: String
                 val target: Language
                 val transcription: String
@@ -575,48 +539,18 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 var lowConfidence = false
                 if (s.isAutoDetect) {
                     transcription = gemma.transcribeOpen(audio)
-                    // Open-set detection via ML Kit (~110 languages), falling
-                    // back to our hand-rolled Kotlin scorer if ML Kit can't
-                    // identify the text confidently.
-                    val mlResult = languageId.identify(transcription)
-                    when (mlResult) {
-                        is ExternalLanguageId.Result.Detected -> {
-                            val mapped = Language.fromIso639(mlResult.code)
-                            if (mapped != null) {
-                                source = mapped
-                                sourceDisplayName = mapped.displayName
-                            } else {
-                                // Recognized language but not in our curated 13
-                                // (Czech, Polish, Persian, Turkish, etc.).
-                                // Gemma can still translate it to English,
-                                // but we haven't verified quality for this set.
-                                source = null
-                                sourceDisplayName = Language.displayNameForUnmapped(mlResult.code)
-                            }
-                            // Flag as low-confidence when ML Kit itself isn't
-                            // strongly sure — correlates with borderline input
-                            // that Gemma is likely also uncertain about.
-                            lowConfidence = mlResult.confidence < 0.85f
-                        }
-                        is ExternalLanguageId.Result.Undetermined,
-                        is ExternalLanguageId.Result.Error -> {
-                            // Fall back to our scorer. Likely low-confidence;
-                            // flag the turn.
-                            val (detected, confidence) =
-                                Language.detectFromAllLanguagesWithConfidence(transcription)
-                            source = detected
-                            sourceDisplayName = detected.displayName
-                            lowConfidence = confidence < 4
-                        }
-                    }
+                    val (detected, confidence) =
+                        Language.detectFromAllLanguagesWithConfidence(transcription)
+                    source = detected
+                    sourceDisplayName = detected.displayName
+                    lowConfidence = confidence < 4
                     target = s.languageA  // auto-detect always targets the operator's language
 
                     // Handoff helper: park the detected source in B so toggling
                     // auto OFF yields a ready-to-converse pair. Only applies when
-                    // the detected language is one of our 13 AND we're confident.
-                    val inSetSource = source
-                    if (inSetSource != null && inSetSource != s.languageA && !lowConfidence) {
-                        setLanguageB(inSetSource)
+                    // we're confident in the broad Kotlin scorer's result.
+                    if (source != s.languageA && !lowConfidence) {
+                        setLanguageB(source)
                     }
                 } else {
                     val pair = gemma.transcribeAndDetect(
@@ -634,43 +568,32 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         if (source == s.languageA) s.languageB else s.languageA
                     }
 
-                    // Advisory check: run ML Kit LID on the transcription.
-                    // The binary scorer in transcribeAndDetect is constrained
-                    // to {A, B} and will pick whichever scores higher even
-                    // when neither language actually matches. If ML Kit is
-                    // confident the language is NOT one of the configured
-                    // pair, surface a warning chip — the source/target/
-                    // translation aren't altered, the operator just sees
-                    // that the audio probably wasn't in their pair.
-                    val lidResult = languageId.identify(transcription)
-                    val lidDetected = lidResult as? ExternalLanguageId.Result.Detected
-                    val lidLang = lidDetected?.code?.let { Language.fromIso639(it) }
-                    val lidConfident = (lidDetected?.confidence ?: 0f) >= 0.5f
-                    if (lidConfident && lidDetected != null
-                        && lidLang != s.languageA && lidLang != s.languageB
+                    // Advisory check: broad scorer can sometimes tell us the
+                    // utterance likely wasn't in the configured pair, even
+                    // though the paired Gemma prompt must choose A or B.
+                    val (broadDetected, broadConfidence) =
+                        Language.detectFromAllLanguagesWithConfidence(transcription)
+                    if (broadConfidence >= 4 &&
+                        broadDetected != s.languageA &&
+                        broadDetected != s.languageB
                     ) {
-                        outOfPairWarning = lidLang?.displayName
-                            ?: Language.displayNameForUnmapped(lidDetected.code)
+                        outOfPairWarning = broadDetected.displayName
                     }
                 }
 
-                val translation = if (source != null && source == target) transcription
+                val translation = if (source == target) transcription
                     else gemma.translate(transcription, sourceDisplayName, target)
                 val spokenAloud = tts.isAvailable(target.locale)
 
-                // Out-of-set source: we can translate via Gemma but quality
-                // isn't verified for these languages. Flag so the UI warns.
-                val qualityUnverified = s.isAutoDetect && source == null
+                val qualityUnverified = false
 
-                // Output-side sanity check: run ML Kit on the translation and
-                // confirm it's in the target language. Catches Gemma returning
-                // source-language text unchanged, or hallucinating a different
-                // language entirely. Only runs when we have a translation (i.e.
-                // source != target, so gemma.translate was actually invoked).
+                // Output-side sanity check using the same broad Kotlin scorer.
+                // This is lighter than model-based LID and avoids extra native
+                // libraries alongside E4B.
                 val translationSuspect = if (source != target) {
-                    val outputCheck = languageId.identify(translation)
-                    outputCheck is ExternalLanguageId.Result.Detected
-                        && outputCheck.code != target.code
+                    val (detectedOutput, confidence) =
+                        Language.detectFromAllLanguagesWithConfidence(translation)
+                    confidence >= 4 && detectedOutput != target
                 } else false
 
                 // Structural check: auto-detect mode exists for non-operator
@@ -691,7 +614,6 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 // cousin language (Bengali, Serbian, Persian) should double-
                 // check rather than trust the label.
                 val confusableSink = s.isAutoDetect
-                    && source != null
                     && Language.confusableNeighbors(source).isNotEmpty()
 
                 val turn = ConversationTurn(
@@ -735,8 +657,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     /**
      * Translate text visible in a picked/captured image. Gemma 4 handles OCR,
-     * then Gemma text translation handles the primary translation. ML Kit is
-     * retained as a fallback for blank/echoed Gemma translation output.
+     * and Gemma handles the text translation. Language routing uses the same
+     * lightweight Kotlin scoring helpers as voice mode.
      */
     /** Gallery/photo-picker entry point. Reads bytes from the URI and delegates. */
     fun processImage(uri: Uri) {
@@ -758,14 +680,35 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
     /** Camera-capture entry point. Raw JPEG bytes from the camera flow. */
     fun processImageBytes(bytes: ByteArray) {
+        val rawSizeKb = bytes.size.toKb()
+        val rawHolder = arrayOf<ByteArray?>(bytes)
         viewModelScope.launch {
             val s0 = _uiState.value
             if (!s0.isModelLoaded || s0.isProcessing) return@launch
 
-            val thumb = withContext(Dispatchers.IO) { makeThumbnail(bytes) }
-            val inferenceImage = withContext(Dispatchers.IO) {
-                makeInferenceImage(bytes, s0.currentModel)
+            logImageMemorySnapshot(
+                "photo start",
+                s0.currentModel,
+                "raw=${rawSizeKb}KB"
+            )
+
+            val thumb = withContext(Dispatchers.IO) { makeThumbnail(rawHolder[0]!!) }
+            logImageMemorySnapshot(
+                "thumbnail ready",
+                s0.currentModel,
+                "raw=${rawSizeKb}KB, thumb=${thumb?.size?.toKb() ?: 0}KB"
+            )
+
+            var inferenceImage: ByteArray? = withContext(Dispatchers.IO) {
+                makeInferenceImage(rawHolder[0]!!, s0.currentModel)
             }
+            rawHolder[0] = null
+            releaseImageTurnMemory(
+                stage = "after image resize",
+                model = s0.currentModel,
+                detail = "inference=${inferenceImage?.size?.toKb() ?: 0}KB",
+                delayMs = if (s0.currentModel == ModelSize.E4B) 200 else 75
+            )
 
             // Target = operator's language (A) in both auto and paired
             // modes. The image use case is "foreign sign → my language."
@@ -795,7 +738,19 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
             try {
                 // Step 1: Gemma OCR — verbatim text in native script.
-                val ocr = gemma.readImage(inferenceImage).trim().trim('"')
+                logImageMemorySnapshot(
+                    "before OCR",
+                    s0.currentModel,
+                    "inference=${inferenceImage?.size?.toKb() ?: 0}KB"
+                )
+                val ocr = gemma.readImage(inferenceImage!!).trim().trim('"')
+                inferenceImage = null
+                releaseImageTurnMemory(
+                    stage = "after OCR",
+                    model = s0.currentModel,
+                    detail = "ocrChars=${ocr.length}",
+                    delayMs = if (s0.currentModel == ModelSize.E4B) 600 else 150
+                )
                 if (ocr.isEmpty() || ocr.equals("(no text)", ignoreCase = true)) {
                     val emptyTurn = placeholder.copy(
                         transcription = "",
@@ -810,48 +765,15 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     return@launch
                 }
 
-                // Step 2: detect source language. We always run ML Kit LID
-                // (open-set ~110 languages) and then decide:
-                //   - Confident + in {A,B}: use LID's pick
-                //   - Confident + not in {A,B}: use LID anyway, set the
-                //     out-of-pair flag so the UI can warn. ML Kit translate
-                //     supports many languages, so the translation usually
-                //     still works — we just want to surface that the photo
-                //     wasn't in either configured language.
-                //   - Auto-detect mode: same logic, no out-of-pair concept
-                //     since there is no pair.
-                //   - Unsure: fall back to the binary A/B scorer with the
-                //     existing tiebreak-to-B rule for short signs.
-                val lidResult = languageId.identify(ocr)
-                val lidDetected = lidResult as? ExternalLanguageId.Result.Detected
-                val lidLang = lidDetected?.code?.let { Language.fromIso639(it) }
-                val lidConfident = (lidDetected?.confidence ?: 0f) >= 0.5f
-
+                // Step 2: detect source language. Auto mode uses the broad
+                // scorer across all curated languages. Paired mode
+                // uses a binary A/B scorer with a tiebreak-to-B rule for short
+                // signs (operators usually photograph the other language).
                 val detectedSource: Language
                 val detectedSourceIso: String
                 var outOfPairWarning: String? = null
 
-                if (lidConfident && lidDetected != null) {
-                    if (s0.isAutoDetect ||
-                        lidLang == s0.languageA ||
-                        lidLang == s0.languageB
-                    ) {
-                        // Confident, and either we're in auto mode (no pair
-                        // constraint) or the detected language IS one of A/B.
-                        detectedSource = lidLang ?: target
-                        detectedSourceIso = lidDetected.code
-                    } else {
-                        // Confident but the detected language is not in the
-                        // configured pair. Use it anyway so the translation
-                        // works, and surface a warning chip.
-                        detectedSource = lidLang ?: target
-                        detectedSourceIso = lidDetected.code
-                        outOfPairWarning = lidLang?.displayName
-                            ?: Language.displayNameForUnmapped(lidDetected.code)
-                    }
-                } else if (s0.isAutoDetect) {
-                    // ML Kit was unsure and we're in auto mode — fall back
-                    // to the broad-scorer pick.
+                if (s0.isAutoDetect) {
                     val (detected, _) = Language.detectFromAllLanguagesWithConfidence(ocr)
                     detectedSource = detected
                     detectedSourceIso = detected.code
@@ -866,30 +788,32 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 // Step 3: if source == target, OCR result IS the translation.
-                // Otherwise prefer Gemma for the text translation. ML Kit is
-                // fast but tends to produce odd literal errors on noisy OCR
-                // snippets because it sees only raw text, not task context.
+                // Otherwise rely fully on Gemma for the text translation.
                 val translation: String = if (detectedSourceIso.equals(target.code, ignoreCase = true)) {
                     ocr
                 } else {
                     val sourceName = outOfPairWarning ?: detectedSource.displayName
+                    logImageMemorySnapshot(
+                        "before photo text translation",
+                        s0.currentModel,
+                        "ocrChars=${ocr.length}, source=$sourceName, target=${target.code}"
+                    )
                     val gemmaTranslation = runCatching {
                         gemma.translate(ocr, sourceName, target)
                     }.onFailure {
-                        Log.w("TranslatorViewModel", "Gemma photo text translation failed", it)
+                        Log.w(TAG, "Gemma photo text translation failed", it)
                     }.getOrNull()
+                    releaseImageTurnMemory(
+                        stage = "after photo text translation",
+                        model = s0.currentModel,
+                        detail = "translationChars=${gemmaTranslation?.length ?: 0}",
+                        delayMs = if (s0.currentModel == ModelSize.E4B) 250 else 75
+                    )
 
-                    if (isUsablePhotoTranslation(gemmaTranslation, ocr, target)) {
-                        gemmaTranslation!!.trim()
-                    } else {
-                        val translated = textTranslator.translate(
-                            text = ocr,
-                            sourceIso = detectedSourceIso,
-                            targetIso = target.code
-                        )
-                        translated ?: gemmaTranslation?.takeIf { it.isNotBlank() }
-                            ?: "(translation unavailable)"
-                    }
+                    gemmaTranslation
+                        ?.takeIf { isUsablePhotoTranslation(it, ocr) }
+                        ?.trim()
+                        ?: "(translation unavailable)"
                 }
 
                 val finalTurn = placeholder.copy(
@@ -906,7 +830,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     s.copy(turns = updated, status = "Ready")
                 }
             } catch (e: Exception) {
-                Log.e("TranslatorViewModel", "Image translation failed", e)
+                Log.e(TAG, "Image translation failed", e)
                 val errorTurn = placeholder.copy(translation = "Error: ${e.message}")
                 _uiState.update { s ->
                     val updated = s.turns.toMutableList().also {
@@ -961,10 +885,10 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         val targetLongEdge = when (model) {
             // E2B has enough headroom to keep more detail for dense documents.
             ModelSize.E2B -> 2560
-            // E4B is the memory-sensitive path. 1920px still preserves useful
-            // OCR detail but avoids full Pixel camera frame allocations next
-            // to the resident 3.7 GB model.
-            ModelSize.E4B -> 1920
+            // E4B is the memory-sensitive path. 1600px keeps signs, menus,
+            // labels, and most document snippets readable while lowering the
+            // native vision scratch allocation beside the resident 3.7 GB model.
+            ModelSize.E4B -> 1600
         }
         val longEdge = maxOf(bounds.outWidth, bounds.outHeight)
         if (longEdge <= 0 || longEdge <= targetLongEdge) return raw
@@ -985,20 +909,52 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         raw
     }
 
-    private suspend fun isUsablePhotoTranslation(
+    private suspend fun releaseImageTurnMemory(
+        stage: String,
+        model: ModelSize,
+        detail: String,
+        delayMs: Long
+    ) {
+        System.gc()
+        System.runFinalization()
+        System.gc()
+        delay(delayMs)
+        logImageMemorySnapshot(stage, model, detail)
+    }
+
+    private fun logImageMemorySnapshot(stage: String, model: ModelSize, detail: String) {
+        val runtime = Runtime.getRuntime()
+        val javaUsedMb = (runtime.totalMemory() - runtime.freeMemory()).toMb()
+        val javaTotalMb = runtime.totalMemory().toMb()
+        val javaMaxMb = runtime.maxMemory().toMb()
+        val nativeAllocatedMb = Debug.getNativeHeapAllocatedSize().toMb()
+        val nativeHeapMb = Debug.getNativeHeapSize().toMb()
+        val memInfo = ActivityManager.MemoryInfo()
+        getApplication<Application>()
+            .getSystemService(ActivityManager::class.java)
+            ?.getMemoryInfo(memInfo)
+        Log.i(
+            TAG,
+            "ImageMemory[$stage]: model=${model.name}, $detail, " +
+                "java=${javaUsedMb}/${javaTotalMb}MB (max=${javaMaxMb}MB), " +
+                "native=${nativeAllocatedMb}/${nativeHeapMb}MB, " +
+                "systemAvail=${memInfo.availMem.toMb()}MB, lowMemory=${memInfo.lowMemory}"
+        )
+    }
+
+    private fun Long.toMb(): Long = this / (1024L * 1024L)
+
+    private fun Int.toKb(): Int = this / 1024
+
+    private fun isUsablePhotoTranslation(
         translation: String?,
-        sourceText: String,
-        target: Language
+        sourceText: String
     ): Boolean {
         val cleaned = translation?.trim().orEmpty()
         if (cleaned.isBlank()) return false
         if (cleaned.equals("(translation unavailable)", ignoreCase = true)) return false
         if (normalizeForEchoCheck(cleaned) == normalizeForEchoCheck(sourceText)) return false
-
-        val outputCheck = languageId.identify(cleaned)
-        return outputCheck !is ExternalLanguageId.Result.Detected ||
-            outputCheck.code == target.code ||
-            outputCheck.confidence < 0.5f
+        return true
     }
 
     private fun normalizeForEchoCheck(text: String): String =
@@ -1009,7 +965,5 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         super.onCleared()
         gemma.close()
         tts.close()
-        languageId.close()
-        textTranslator.close()
     }
 }

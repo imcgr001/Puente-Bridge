@@ -1,6 +1,8 @@
 package com.pixeltranslator.multi.ml
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Debug
 import android.os.Environment
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
@@ -133,25 +135,64 @@ class GemmaTranslatorManager(private val context: Context) {
         }
 
         Log.i(TAG, "Loading ${model.label} from ${modelFile.absolutePath}")
+        logMemorySnapshot("before EngineConfig", model)
+
+        val mainBackend = Backend.GPU()
+        val visionBackend = if (model == ModelSize.E4B) Backend.CPU() else Backend.GPU()
+        val audioBackend = Backend.CPU()
 
         val config = EngineConfig(
             modelPath = modelFile.absolutePath,
-            backend = Backend.GPU(),
+            backend = mainBackend,
             // Keep E4B's optional vision tower off the GPU. The common path is
             // speech; reserving GPU memory for photo OCR at startup pushes E4B
             // close enough to the native allocator limit that ART's recompiler
             // thread can fail mmap() and abort the process.
-            visionBackend = if (model == ModelSize.E4B) Backend.CPU() else Backend.GPU(),
-            audioBackend = Backend.CPU(),
+            visionBackend = visionBackend,
+            audioBackend = audioBackend,
             maxNumTokens = model.maxTokens
         )
+        Log.i(
+            TAG,
+            "Creating LiteRT-LM Engine: model=${model.name}, mainBackend=GPU, " +
+                "visionBackend=${if (model == ModelSize.E4B) "CPU" else "GPU"}, " +
+                "audioBackend=CPU, maxTokens=${model.maxTokens}"
+        )
+        logMemorySnapshot("before Engine()", model)
         val e = Engine(config)
+        Log.i(TAG, "LiteRT-LM Engine constructed for ${model.name}")
+        logMemorySnapshot("after Engine()", model)
+        Log.i(TAG, "Initializing LiteRT-LM Engine for ${model.name}")
         e.initialize()
+        Log.i(TAG, "LiteRT-LM Engine initialized for ${model.name}")
+        logMemorySnapshot("after initialize()", model)
         engine = e
         currentModel = model
 
         Log.i(TAG, "${model.label} loaded successfully.")
     }
+
+    private fun logMemorySnapshot(stage: String, model: ModelSize) {
+        val runtime = Runtime.getRuntime()
+        val javaUsedMb = (runtime.totalMemory() - runtime.freeMemory()).toMb()
+        val javaTotalMb = runtime.totalMemory().toMb()
+        val javaMaxMb = runtime.maxMemory().toMb()
+        val nativeAllocatedMb = Debug.getNativeHeapAllocatedSize().toMb()
+        val nativeHeapMb = Debug.getNativeHeapSize().toMb()
+        val memInfo = ActivityManager.MemoryInfo()
+        val activityManager = context.getSystemService(ActivityManager::class.java)
+        activityManager?.getMemoryInfo(memInfo)
+        Log.i(
+            TAG,
+            "Memory[$stage]: model=${model.name}, java=${javaUsedMb}/${javaTotalMb}MB " +
+                "(max=${javaMaxMb}MB), native=${nativeAllocatedMb}/${nativeHeapMb}MB, " +
+                "systemAvail=${memInfo.availMem.toMb()}MB, " +
+                "systemTotal=${memInfo.totalMem.toMb()}MB, " +
+                "threshold=${memInfo.threshold.toMb()}MB, lowMemory=${memInfo.lowMemory}"
+        )
+    }
+
+    private fun Long.toMb(): Long = this / (1024L * 1024L)
 
     /**
      * Transcribes speech and auto-detects which of two candidate languages
@@ -394,9 +435,8 @@ class GemmaTranslatorManager(private val context: Context) {
 
     /**
      * Translates [text] into [target] with a free-form source language name.
-     * Used in auto-detect mode when the detected source is an ML Kit language
-     * outside our curated [Language] enum (e.g. Czech, Polish, Persian).
-     * Gemma handles most common languages even without a typed hint.
+     * Used when the caller has only a free-form source-language hint.
+     * Gemma handles most common languages even without a typed enum hint.
      */
     suspend fun translate(
         text: String,

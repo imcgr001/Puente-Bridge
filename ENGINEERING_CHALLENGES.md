@@ -473,7 +473,7 @@ Scudo ERROR: internal map failure (error desc=Out of memory)
 Fatal signal 6 (SIGABRT) in tid "Recompile (dwt)"
 ```
 
-This means the process was failing native `mmap()`/allocator work while LiteRT-LM, ART, GPU/OpenCL, and ML Kit were all sharing the same address-space and resident-memory budget. `largeHeap` does not solve this class of failure because the Gemma weights, GPU buffers, KV cache, image tensors, and ML Kit models are not ordinary Java heap objects.
+This means the process was failing native `mmap()`/allocator work while LiteRT-LM, ART, GPU/OpenCL, image tensors, and other native runtime allocations were all sharing the same address-space and resident-memory budget. `largeHeap` does not solve this class of failure because the Gemma weights, GPU buffers, KV cache, and image tensors are not ordinary Java heap objects.
 
 ### Root cause
 
@@ -481,9 +481,8 @@ E4B's model weights are only part of the footprint. The risky peaks came from se
 
 1. **Oversized KV/cache budget.** `maxNumTokens = 1536` preallocates more native cache than most short translation turns need. E4B pays a much higher per-token memory cost than E2B.
 2. **Optional vision resources loaded beside the speech path.** The multilingual app configured the vision tower on GPU at engine startup even though the common path is speech. That reserved scarce GPU/native memory before a photo was ever selected.
-3. **ML Kit translate preloading at the same time as Gemma startup.** First-launch preloading is useful for offline readiness, but it creates transient translator instances and model downloads right next to E4B's largest allocation window.
-4. **Full-resolution photo frames.** Pixel camera stills are commonly around 4080x3072 in default binned mode, and can be roughly 8160x6144 in 50 MP mode. Passing those directly into native vision preprocessing can allocate large temporary tensors while E4B is already resident.
-5. **Any accidental overlap between Gemma conversations.** Even if the UI tries to prevent it, native inference should be protected by a single-flight lock because overlapping `Conversation` allocations are expensive and failure is not catchable.
+3. **Full-resolution photo frames.** Pixel camera stills are commonly around 4080x3072 in default binned mode, and can be roughly 8160x6144 in 50 MP mode. Passing those directly into native vision preprocessing can allocate large temporary tensors while E4B is already resident.
+4. **Any accidental overlap between Gemma conversations.** Even if the UI tries to prevent it, native inference should be protected by a single-flight lock because overlapping `Conversation` allocations are expensive and failure is not catchable.
 
 ### Solution
 
@@ -492,15 +491,13 @@ The app now treats E4B as a memory-sensitive mode:
 - **Per-model token budget.** E2B keeps `1536` max tokens. E4B uses `1024`, which is enough for short speech translation and OCR output while reducing the native KV/cache allocation.
 - **Single-flight Gemma inference.** All Gemma calls go through a `Mutex`, so speech, direct translation, OCR, and text translation cannot overlap native `Conversation` allocations.
 - **Vision backend tradeoff.** E4B uses `Backend.CPU()` for the vision tower while keeping the main LLM on GPU. E2B keeps GPU vision. Photo OCR remains available; E4B just avoids reserving GPU memory for the less-common path.
-- **Defer ML Kit preload under E4B.** E2B still preloads translation models after Gemma and TTS are ready. E4B skips the startup preload and lazily loads on first photo translation instead.
-- **Adaptive photo downsampling, not cropping.** Camera/gallery images are resized proportionally before Gemma OCR only when they exceed a long-edge limit. Nothing is cut off. E2B uses a 2560 px long-edge limit for dense documents; E4B uses 1920 px to reduce native vision preprocessing peaks.
+- **Adaptive photo downsampling, not cropping.** Camera/gallery images are resized proportionally before Gemma OCR only when they exceed a long-edge limit. Nothing is cut off. E2B uses a 2560 px long-edge limit for dense documents; E4B uses 1600 px to reduce native vision preprocessing peaks.
 
 ### Tradeoffs
 
 - **E4B max output length is lower.** Very long documents or unusually verbose translations may truncate sooner under E4B. For the app's intended short speech turns and sign/menu/photo snippets, 1024 tokens is the better stability tradeoff.
 - **E4B photo OCR may be slower.** Moving the vision tower to CPU protects memory but can cost latency. The app keeps photo support because OCR quality is more important than speed for that mode.
-- **First photo translation on E4B may need model setup.** Skipping ML Kit preload avoids startup crashes, but the first source/target photo translation pair may incur lazy model initialization or download if it was not already cached.
-- **Downsampling is a safety valve, not a crop.** A default Pixel photo around 4080x3072 becomes roughly 1920x1446 on E4B. The whole image remains visible, but tiny far-away text may benefit from the user moving closer or cropping in the camera/gallery before submitting.
+- **Downsampling is a safety valve, not a crop.** A default Pixel photo around 4080x3072 becomes roughly 1600x1205 on E4B. The whole image remains visible, but tiny far-away text may benefit from the user moving closer or cropping in the camera/gallery before submitting.
 
 ---
 

@@ -61,21 +61,7 @@ dependencies {
 
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.0")
 
-    // ML Kit Language Identification — bundled model, offline-capable,
-    // identifies ~110 languages from transcribed text. Adds ~900 KB.
-    // Used by auto-detect mode to replace the hand-rolled scorer for
-    // open-set identification across languages we haven't curated features for.
-    implementation("com.google.mlkit:language-id:17.0.6")
-
-    // ML Kit Translate — per-pair on-device translation (~30 MB per model,
-    // downloaded on demand). Covers 59 languages including all 13 of our
-    // paired set. Used in the image pipeline as the second step after Gemma
-    // OCR, replacing Gemma's text-translate call: faster (~100 ms vs 1-2 s),
-    // deterministic, and single-purpose so it can't collapse to OCR-only.
-    implementation("com.google.mlkit:translate:17.0.3")
-
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -32,7 +32,7 @@ The app supports paired conversation across:
 - Russian
 - Vietnamese
 
-Auto-detect mode uses ML Kit language identification for broader language detection, then translates into the selected app language.
+Auto-detect mode uses the app's lightweight Kotlin language scorer, then Gemma translates into the selected app language.
 
 ## Why Gemma 4
 
@@ -61,7 +61,7 @@ Microphone PCM
 Photo bytes
   -> adaptive resize for inference
   -> Gemma 4 OCR
-  -> ML Kit on-device text translation
+  -> Gemma 4 text translation
   -> conversation bubble
 ```
 
@@ -71,8 +71,7 @@ Key implementation details:
 - Main LLM backend: GPU
 - Audio backend: CPU
 - E4B vision backend: CPU to reduce GPU/native memory pressure
-- ML Kit Language ID: offline bundled language identification
-- ML Kit Translate: on-device text translation models, downloaded/cached as needed
+- Kotlin language scoring helpers for routing and sanity checks
 
 ## Privacy
 
@@ -84,7 +83,7 @@ The app is designed so conversation content stays on the device.
 - No conversation history is intentionally persisted during normal use.
 - The app disables Android backup with `android:allowBackup="false"`.
 
-ML Kit translation models may need to be downloaded once. After required models are cached, translation works offline.
+After the Gemma model files are provisioned on-device, inference runs offline.
 
 ## Project Structure
 
@@ -179,7 +178,6 @@ E4B is large enough that native memory management matters on Android. The app in
 - Lower E4B LiteRT-LM token/cache budget than E2B.
 - Single-flight Gemma inference via a mutex.
 - CPU vision backend for E4B.
-- Deferred ML Kit translation preload when E4B is active.
 - Adaptive photo downsampling before Gemma OCR.
 
 These changes are documented in `ENGINEERING_CHALLENGES.md`.
@@ -191,7 +189,7 @@ These changes are documented in `ENGINEERING_CHALLENGES.md`.
 - Photo OCR quality depends on image clarity, angle, lighting, and text size.
 - Some Android TTS voices may not be installed; the app falls back to text-only output.
 - E4B has higher memory pressure and may be slower than E2B.
-- ML Kit translation models may need first-use download before fully offline image translation works.
+- Auto-detect is limited to the curated language scorer rather than a broad external language-ID model.
 
 ## Healthcare and Safety Note
 

@@ -259,29 +259,17 @@ enum class Language(
             return top to scoreCandidate(text, top)
         }
 
-        /**
-         * Maps an ML Kit ISO 639-1 language code to our Language enum. Returns
-         * null if the code is recognized by ML Kit but not one of our 13
-         * fully-supported languages — caller can still use the transcription
-         * with Gemma for best-effort English translation, but we don't have
-         * TTS / paired-mode support for it.
-         */
+        /** Maps an ISO 639 language code to our supported [Language] enum. */
         fun fromIso639(code: String?): Language? {
             if (code == null) return null
             val lc = code.trim().lowercase()
-            // ML Kit uses "zh" (which could be Simplified or Traditional), we
-            // normalize to our CHINESE entry (zh-CN / Simplified).
             val normalized = if (lc == "zh-latn") "en" else lc.substringBefore('-')
             return entries.firstOrNull { it.code == normalized }
         }
 
         /**
-         * Friendly display name for ISO 639-1 codes that ML Kit might return
-         * but which aren't in our [Language] enum. Used to label the source of
-         * an auto-detected turn that maps to an out-of-set language ("Czech",
-         * "Polish", "Turkish") so the UI can tell the user what was recognized
-         * even when it's outside our fully-supported set. Falls back to the
-         * raw code if we haven't mapped it.
+         * Friendly display name for ISO 639-1 codes outside our [Language] enum.
+         * Falls back to the raw code if we haven't mapped it.
          */
         /**
          * "Sink" languages whose audio encoder has historically absorbed

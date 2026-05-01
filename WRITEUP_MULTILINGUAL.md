@@ -6,14 +6,14 @@
 
 ## Summary
 
-Puente-Multi is a fully on-device, real-time **speech and image** translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech *and vision* via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Voice translation goes entirely through Gemma; photo translation (for signs, menus, intake forms, pharmacy labels, handwritten notes) splits Gemma's OCR output into Google ML Kit's on-device translator for the text-to-text step, giving both speed and deterministic behavior the single-call path can't guarantee. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
+Puente-Multi is a fully on-device, real-time **speech and image** translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech *and vision* via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Voice translation and photo translation both go through Gemma: photos use Gemma OCR first, then a Gemma text-translation pass for the OCR output. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
 
-**No data leaves the device.** All speech processing, transcription, OCR, translation, and audio synthesis occur entirely on the phone. No audio, images, or text are recorded, stored, or transmitted. The one exception is a one-time first-launch download of the ML Kit translator models (~360 MB across 12 language pairs); after that, airplane mode is fully supported.
+**No data leaves the device.** All speech processing, transcription, OCR, translation, and audio synthesis occur entirely on the phone. No audio, images, or text are recorded, stored, or transmitted. After the Gemma model files are provisioned on-device, airplane mode is fully supported.
 
 Puente-Multi offers two operating modes that together address the breadth of real-world translation scenarios:
 
 - **Paired mode** for the common case — two known speakers having a back-and-forth conversation in two pre-selected languages. Optimized for fluency, with anchored prompting and binary detection.
-- **Auto-detect mode** for the high-stakes case — a single operator who doesn't know in advance what language the other person will speak. Open-set transcription and language identification across **~110 languages** (via Google ML Kit's on-device language-ID model), target hardcoded to English (the operator's language). Designed for disaster response intake, refugee reception, hospital triage, and other "process people of unknown origin" scenarios.
+- **Auto-detect mode** for the high-stakes case — a single operator who doesn't know in advance which supported language the other person will speak. Gemma transcribes without a language hint, a Kotlin scorer routes the result across the curated language set, and the target is the operator's app language. Designed for disaster response intake, refugee reception, hospital triage, and other "process people of unknown origin" scenarios.
 
 Puente-Multi is a generalization of the earlier EN↔ES translator into a thirteen-way any-to-any tool. It is built for anyone who needs to communicate across the world's major language barriers — in disaster zones, at field clinics, across border crossings, or simply between travelers and locals — in places where internet is unavailable, where privacy is non-negotiable, or where professional interpretation is out of reach.
 
@@ -95,25 +95,20 @@ This is the production-grade path: anchoring catches "muy bien" as Spanish rathe
 A small Switch labeled "Auto-detect language → English" disables the language pair and re-routes the per-turn flow:
 
 1. Gemma transcribes with **no** language hint — just *"Transcribe exactly what was said, in its original language. Use that language's native script."*
-2. The transcribed text is handed to **Google ML Kit's on-device Language Identification** model, which covers ~110 languages and returns a confident ISO 639-1 code (or `und` for unrecognized input).
-3. The ML Kit code is mapped to our `Language` enum. Three outcomes:
-   - **In our curated 13** (e.g. Russian, Spanish, Chinese): source becomes the enum entry; translation proceeds normally. The detected language is parked in the (greyed-out) Language B dropdown so that toggling auto-detect off yields a ready-to-go conversation pair.
-   - **Recognized but outside our 13** (e.g. Czech, Polish, Persian, Thai, Hebrew, Greek, Turkish): source enum is `null`, but a proper display name is retained ("Czech", "Polish", etc.). Translation to English still succeeds because Gemma handles most ML Kit–supported languages. The conversation bubble shows a small note "(recognized, not a conversation pair language)" — honest about what happened.
-   - **Undetermined or error**: fall back to our hand-rolled Kotlin scorer as a safety net, flag the turn as low-confidence.
-4. Translation target is hardcoded to English. Always. The operator (presumed English-speaking) gets a usable result regardless of what the other party said.
-
-The ML Kit model adds ~900 KB to the APK, is fully offline, and requires no runtime download — consistent with the app's offline-first disaster-response design. No network permission is needed or declared.
+2. The transcribed text is scored by the same deterministic Kotlin language scorer used elsewhere in the app.
+3. If confidence is high, the detected language is parked in the Language B dropdown so toggling auto-detect off yields a ready-to-go conversation pair.
+4. Translation target is the selected app language. The operator gets a usable result without changing the conversation pair first.
 
 Empirical testing during development confirmed the full pipeline works end-to-end for Russian (Cyrillic), Mandarin Chinese (Han), Arabic, French, Spanish, Slovak ("Ahoj, ako sa máš."), Polish ("Cześć, jak się masz?"), and Thai ("สวัสดีครับ ค่ะ สบายดีไหมครับ คะ"). The non-Latin cases (Russian, Chinese, Arabic, Thai) are detected trivially by script; the Latin-script cases (Slovak, Polish, Czech, Hungarian, Romanian, Turkish) — which previously would have been misdetected as Spanish or Portuguese by our hand-rolled scorer due to shared diacritics — are now identified correctly.
 
-### Architectural split: hand-rolled scorer vs ML Kit
+### Architectural split: paired anchoring vs broad scoring
 
 The two modes use genuinely different identification strategies, tuned to their respective problems:
 
 - **Paired mode** is a *closed-set classification problem* — given audio, is it A or B? The deterministic Kotlin scorer in `Language.scoreCandidate` is the right tool: fast, auditable, zero external dependencies, and only has to tell two specific things apart. No model-based identification is needed when the answer space is constrained to two user-selected choices.
-- **Auto-detect mode** is an *open-set identification problem* — given audio, what language is it? Hand-rolled features per language don't scale beyond the curated 13, and the scorer's behavior on out-of-set languages was to force them into the closest-matching candidate (e.g. Czech's `á` diacritic scoring equally for Spanish and Portuguese). ML Kit is the right tool here: its 110-language coverage dramatically reduces the "confidently wrong" failure mode, and its confidence scores are properly calibrated.
+- **Auto-detect mode** is a broader classification problem across the curated set. The scorer is less powerful than a dedicated external language-ID model, but it avoids extra native libraries and keeps the app fully Gemma-centered.
 
-Both tools coexist in the codebase. The hand-rolled scorer remains the production default for paired mode (where it's reliable and zero-overhead); ML Kit owns the auto-detect path (where its open-set coverage matters); and if ML Kit ever returns `und` or fails, the hand-rolled scorer is the fallback — no single point of failure.
+The same auditable language-scoring layer now owns routing in both modes, while Gemma owns transcription, OCR, and translation.
 
 ### Why both modes
 
@@ -268,7 +263,7 @@ Speaker
 | **Audio capture** | Android `AudioRecord` + `NoiseSuppressor` + `AcousticEchoCanceler` | 16 kHz/16-bit/mono PCM with hardware noise/echo reduction |
 | **Text-to-speech** | Android `TextToSpeech` with per-locale `Locale` | Native voices: English, Spanish, French, German, Portuguese, Italian, Chinese, Japanese, Korean, Hindi, Arabic, Russian, Vietnamese |
 | **Language detection (paired mode)** | Kotlin-side heuristic in `Language.kt` | Script-range + diacritic + stopword scoring — deterministic binary A-vs-B decision, no model call required |
-| **Language detection (auto-detect mode)** | Google ML Kit Language ID 17.0.6 (bundled, offline) in `ExternalLanguageId.kt` | ~110-language open-set identification from transcribed text; ~900 KB bundled model |
+| **Language detection (auto-detect mode)** | Kotlin-side heuristic in `Language.kt` | Broad scoring across the curated supported set |
 | **UI** | Jetpack Compose + Material 3 | Two-dropdown language picker + push-to-talk + conversation history |
 | **Storage** | Shared `/sdcard/Download/litertlm-models/` with `MANAGE_EXTERNAL_STORAGE` | Single multi-GB model file serves both bilingual and multilingual apps |
 
@@ -313,11 +308,11 @@ Gemma 4 vision tower via LiteRT-LM  (visionBackend = Backend.GPU())
 Language identification
    │  Paired mode → Language.scoreCandidate(text, A) vs (text, B), tiebreak
    │                to B (foreign-language assumption for the image use case)
-   │  Auto mode  → ML Kit open-set identification
+   │  Auto mode  → broad Kotlin scorer across supported languages
    │
    ▼
-ML Kit Translate  (translate:17.0.3, ~30 MB per language-pair model)
-   │  Source → target direct translation, fully on-device.
+Gemma 4 text translation
+   │  OCR text → target-language translation, fully on-device.
    │  Skipped entirely when detected source == target (English menu in an
    │  English operator's paired mode shows OCR text unchanged).
    │
@@ -327,12 +322,9 @@ Conversation bubble (thumbnail preview + native-script text + translation)
 
 ### Key Design Decisions (photo pipeline)
 
-**Two stages, two models — deliberately.** E4B can do "read and translate" in a single call; E2B collapses the same combined prompt into OCR and returns the source text unchanged. Splitting into Gemma-OCR + ML-Kit-translate gives both variants reliable behavior. Secondary wins:
-- ML Kit's translator is purpose-built for translation — it cannot silently fall back to OCR the way Gemma can.
-- ML Kit runs ~10-20× faster than a Gemma text-translate pass (~50-100 ms vs 1-2 s on the same device).
-- Gemma stays on what it's uniquely good at (reading text in images / handwriting / unusual fonts across 13 languages).
+**Two Gemma stages — deliberately.** E4B can do "read and translate" in a single call; E2B often collapses the same combined prompt into OCR and returns the source text unchanged. Splitting into Gemma OCR followed by a Gemma text-translation pass makes the task boundary explicit while keeping the implementation LLM-only.
 
-**Binary scorer in paired mode, not ML Kit LID.** ML Kit's language identification is tuned for open-set classification over ~110 languages and needs a few words of context to be reliable. Single-word signs (`ALTO`, `STOP`, `SALIDA`) don't give it enough to work with — `ALTO` got classified as English because "alto" is a valid English word (the music-voice meaning). In paired mode we already know the answer space is just {A, B}, so the same hand-rolled Kotlin scorer used for voice turns runs here too, with one extension: a tie or near-tie breaks to B rather than A. Reasoning — operators almost never photograph text in their own language.
+**Binary scorer in paired mode.** Single-word signs (`ALTO`, `STOP`, `SALIDA`) don't give any detector much context. In paired mode we already know the answer space is just {A, B}, so the same Kotlin scorer used for voice turns runs here too, with one extension: a tie or near-tie breaks to B rather than A. Reasoning — operators almost never photograph text in their own language.
 
 **Thumbnail shows instantly.** A placeholder turn carrying the thumbnail is inserted into the conversation the moment the user picks the image; the translation text swaps in when Gemma returns. Users don't stare at a blank card while the vision encoder runs.
 
@@ -340,9 +332,7 @@ Conversation bubble (thumbnail preview + native-script text + translation)
 
 ### Offline-First by Default
 
-Every inference path — voice ASR, voice translation, image OCR, image translation, language identification — runs without network once the app is provisioned. The only one-time network dependency is ML Kit's translator-model download on first launch: the app fires a background coroutine at init that iterates the 12 non-English languages and pre-downloads their English-pivot models (~30 MB each, ~360 MB total). A completion flag in preferences prevents re-running on subsequent launches; a partial failure leaves the flag unset so the next launch retries only the missing models.
-
-After that first-launch download, airplane mode is a supported operating condition. No telemetry, no cloud fallback, no silent upload. The app is built for contexts where connectivity is absent by design — field clinics, disaster response, remote classrooms, travel in areas without data coverage — and the offline-first assumption is load-bearing everywhere in the architecture.
+Every inference path — voice ASR, voice translation, image OCR, image translation, language identification — runs without network once the Gemma model files are provisioned. Airplane mode is a supported operating condition. No telemetry, no cloud fallback, no silent upload. The app is built for contexts where connectivity is absent by design — field clinics, disaster response, remote classrooms, travel in areas without data coverage — and the offline-first assumption is load-bearing everywhere in the architecture.
 
 The one remaining manual step is the Gemma model itself. The `.litertlm` file is 2.6 GB (E2B) or 3.7 GB (E4B), which exceeds the Google Play APK and AAB limits, and side-loading via `adb push` or equivalent pre-provisioning is the practical distribution path for the hackathon. Organizations deploying the app at scale would typically pre-image devices before handing them out; the code already supports reading the model from a shared external-storage path precisely to make that workflow clean.
 
@@ -498,7 +488,7 @@ Across all thirteen, consistent limitations:
 - **Humor, sarcasm, cultural references, wordplay** do not translate. The output will be technically accurate and completely flat.
 - **High-stakes use cases still need human interpretation.** Medical consent, legal proceedings, surgical instructions, safety-critical communication — this tool is not a substitute for a qualified human interpreter in those contexts.
 - **The paired-mode A/B constraint is by design.** If a speaker uses a third language (say, French when the pair is set to English/Spanish), the app will incorrectly route the turn. Auto-detect mode addresses this, but introduces its own failure modes.
-- **Auto-detect mode has residual failure modes.** ML Kit's language identifier covers ~110 languages and handles most realistic input cleanly, but (a) without language anchoring during transcription, Gemma's audio encoder can occasionally force foreign phonemes into English-shaped tokens before ML Kit ever sees the text; (b) truly rare languages outside ML Kit's set will return `und` and fall back to the hand-rolled scorer, which may misidentify; (c) translation quality for out-of-set-but-ML-Kit-recognized languages (Czech, Hungarian, Pashto, etc.) is unverified — Gemma handles most of them but results may be more literal than for the curated 13. The app surfaces a low-confidence label when ML Kit and fallback both express uncertainty.
+- **Auto-detect mode has residual failure modes.** Without language anchoring during transcription, Gemma's audio encoder can occasionally force foreign phonemes into English-shaped tokens before the scorer ever sees the text. Languages outside the curated set are forced into the closest supported candidate. The app surfaces a low-confidence label when scorer confidence is weak.
 - **E2B vs E4B matters.** The "Faster" (E2B) model is noticeably weaker than "Higher Accuracy" (E4B) on lower-tier languages. If translation quality for Japanese, Korean, Hindi, or Arabic feels wrong, switching to E4B often helps — at the cost of 1.5× latency and significantly more memory.
 
 The overall honest framing: this tool is an offline communication aid, not a professional translation system. It lets people who don't share a language get an *approximate* understanding of each other in contexts where the alternative is no communication at all. For the contexts where approximate isn't good enough (surgical consent, legal testimony, diplomatic negotiation), the regulations and professional norms that require human interpreters exist for good reasons — and this tool doesn't change that.
@@ -531,7 +521,7 @@ The `Language` enum is the single source of truth for the supported set. Adding 
 - **Language**: Kotlin 2.3.0
 - **UI framework**: Jetpack Compose + Material 3
 - **ML runtime**: LiteRT-LM 0.10.0 (Google AI Edge)
-- **Language identification**: Google ML Kit Language ID 17.0.6 (bundled, offline, ~900 KB)
+- **Language identification**: Kotlin scoring over scripts, diacritics, and stopwords in `Language.kt`
 - **Model**: Gemma 4 E2B / E4B (`.litertlm` format)
 - **TTS**: Android `TextToSpeech` API
 - **Audio**: Android `AudioRecord` (16 kHz / 16-bit / mono PCM) with hardware `NoiseSuppressor` + `AcousticEchoCanceler`
