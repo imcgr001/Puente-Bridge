@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
@@ -50,6 +51,13 @@ class TtsManager(private val context: Context) {
             result == TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE
     }
 
+    fun isSpeaking(): Boolean = tts?.isSpeaking == true
+
+    fun stop() {
+        tts?.stop()
+        releaseAudioFocus()
+    }
+
     suspend fun speak(text: String, locale: Locale, speed: Float = 0.95f): Boolean {
         if (!initialized) return false
         val engine = tts ?: return false
@@ -73,16 +81,19 @@ class TtsManager(private val context: Context) {
 
         withContext(Dispatchers.IO) {
             suspendCancellableCoroutine { cont ->
+                val completed = AtomicBoolean(false)
+                fun complete() {
+                    if (completed.compareAndSet(false, true)) {
+                        releaseAudioFocus()
+                        cont.resume(Unit)
+                    }
+                }
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) {
-                        releaseAudioFocus()
-                        cont.resume(Unit)
-                    }
-                    override fun onError(utteranceId: String?) {
-                        releaseAudioFocus()
-                        cont.resume(Unit)
-                    }
+                    override fun onDone(utteranceId: String?) = complete()
+                    @Deprecated("Android framework still requires this callback override")
+                    override fun onError(utteranceId: String?) = complete()
+                    override fun onStop(utteranceId: String?, interrupted: Boolean) = complete()
                 })
                 engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "translate_tts")
             }

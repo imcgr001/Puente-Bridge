@@ -72,6 +72,7 @@ data class TranslatorUiState(
     val isAutoStopMic: Boolean = false,  // tap mic once; stop automatically after trailing silence
     val showSettings: Boolean = false,  // bottom-sheet-style modal overlay for mode toggles
     val pendingDirectTarget: Language? = null,  // set when a direction-specific mic was pressed in paired+direct mode
+    val activeReplayTurnIndex: Int? = null,  // currently replaying bubble; second tap stops playback
     val isProcessing: Boolean = false   // a turn is in flight (transcribe/translate/TTS); mic button should be disabled
 )
 
@@ -258,6 +259,24 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     fun playDisclaimerAloud(language: Language) {
         viewModelScope.launch {
             tts.speak(Disclaimer.textFor(language), language.locale)
+        }
+    }
+
+    fun replayTurn(index: Int, turn: ConversationTurn) {
+        if (_uiState.value.activeReplayTurnIndex != null || tts.isSpeaking()) {
+            tts.stop()
+            _uiState.update { it.copy(activeReplayTurnIndex = null, status = "Ready") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(activeReplayTurnIndex = index) }
+            val ok = tts.speak(turn.translation, turn.targetLanguage.locale)
+            _uiState.update { it.copy(activeReplayTurnIndex = null) }
+            if (!ok) {
+                _uiState.update {
+                    it.copy(status = "No TTS voice installed for ${turn.targetLanguage.displayName}")
+                }
+            }
         }
     }
 

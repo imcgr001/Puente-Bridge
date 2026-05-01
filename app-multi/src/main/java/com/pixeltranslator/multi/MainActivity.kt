@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
@@ -48,6 +49,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -402,9 +404,19 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                     )
                 } else {
                     uiState.turns.forEachIndexed { index, turn ->
+                        val canReplayTurn = canReplayTurn(
+                            turn = turn,
+                            ttsAvailableForA = uiState.ttsAvailableForA,
+                            ttsAvailableForB = uiState.ttsAvailableForB,
+                            languageA = uiState.languageA,
+                            languageB = uiState.languageB
+                        )
                         ConversationBubble(
                             turn = turn,
                             strings = strings,
+                            canReplay = canReplayTurn,
+                            isReplaying = uiState.activeReplayTurnIndex == index,
+                            onReplayClick = { viewModel.replayTurn(index, turn) },
                             onPhotoClick = { previewPhotoJpeg = it }
                         )
                         if (index < uiState.turns.lastIndex) {
@@ -947,16 +959,46 @@ private fun PushToTalkButton(
 private fun ConversationBubble(
     turn: ConversationTurn,
     strings: UiStrings,
+    canReplay: Boolean,
+    isReplaying: Boolean,
+    onReplayClick: () -> Unit,
     onPhotoClick: (ByteArray) -> Unit
 ) {
     SelectionContainer {
         Column(modifier = Modifier.fillMaxWidth()) {
             val sourceLabel = "${turn.sourceDisplayName} → ${turn.targetLanguage.displayName}"
-            Text(
-                text = sourceLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = sourceLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (canReplay) {
+                    IconButton(
+                        onClick = onReplayClick,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isReplaying) {
+                                Icons.Default.Stop
+                            } else {
+                                Icons.AutoMirrored.Filled.VolumeUp
+                            },
+                            contentDescription = if (isReplaying) {
+                                "Stop playback"
+                            } else {
+                                "Replay translation"
+                            },
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
             // Turn whose detected language wasn't in the configured pair.
             // Translation may still work through Gemma, but flag it so the
             // user knows the source isn't what they configured.
@@ -1078,6 +1120,27 @@ private fun ConversationBubble(
                 )
             }
         }
+    }
+}
+
+private fun canReplayTurn(
+    turn: ConversationTurn,
+    ttsAvailableForA: Boolean,
+    ttsAvailableForB: Boolean,
+    languageA: Language,
+    languageB: Language
+): Boolean {
+    val translation = turn.translation.trim()
+    if (turn.isImageTurn) return false
+    if (translation.isBlank()) return false
+    if (translation.equals("(translating...)", ignoreCase = true)) return false
+    if (translation.equals("(translation unavailable)", ignoreCase = true)) return false
+    if (translation.startsWith("Error:", ignoreCase = true)) return false
+
+    return when (turn.targetLanguage) {
+        languageA -> ttsAvailableForA
+        languageB -> ttsAvailableForB
+        else -> true
     }
 }
 
