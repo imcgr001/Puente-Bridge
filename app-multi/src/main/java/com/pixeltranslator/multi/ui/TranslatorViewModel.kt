@@ -36,6 +36,7 @@ data class ConversationTurn(
     val sourceDisplayName: String,  // always populated — falls back to ISO code for exotic languages
     val targetLanguage: Language,
     val spokenAloud: Boolean,  // false → TTS voice wasn't available; translation shown as text only
+    val isImageTurn: Boolean = false,  // true for photo OCR/translation turns; no TTS is expected
     val thumbnailJpeg: ByteArray? = null,  // set for image-translation turns; downsampled JPEG for bubble preview
     val lowConfidence: Boolean = false,       // detector confidence below threshold
     val qualityUnverified: Boolean = false,   // source is outside our curated 13 (ML-Kit-only support)
@@ -67,6 +68,7 @@ data class TranslatorUiState(
     val isAutoDetect: Boolean = false,  // experimental: open-set lang detect, always translate to English
     val isDirectTranslation: Boolean = false,  // Gemma 4 AST: audio→target in one call, no transcription step
     val isExplicitDirection: Boolean = false,  // paired+direct mode: show two target-specific mics
+    val isAutoStopMic: Boolean = false,  // tap mic once; stop automatically after trailing silence
     val showSettings: Boolean = false,  // bottom-sheet-style modal overlay for mode toggles
     val pendingDirectTarget: Language? = null,  // set when a direction-specific mic was pressed in paired+direct mode
     val isProcessing: Boolean = false   // a turn is in flight (transcribe/translate/TTS); mic button should be disabled
@@ -84,6 +86,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         private const val KEY_MODEL = "selected_model"
         private const val KEY_DIRECT_TRANSLATION = "direct_translation"
         private const val KEY_EXPLICIT_DIRECTION = "explicit_direction"
+        private const val KEY_AUTO_STOP_MIC = "auto_stop_mic"
         private const val KEY_TRANSLATE_MODELS_PRELOADED = "translate_models_preloaded_v1"
     }
 
@@ -112,7 +115,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 currentModel = savedModel,
                 turns = pendingTurns,
                 isDirectTranslation = prefs.getBoolean(KEY_DIRECT_TRANSLATION, false),
-                isExplicitDirection = prefs.getBoolean(KEY_EXPLICIT_DIRECTION, false)
+                isExplicitDirection = prefs.getBoolean(KEY_EXPLICIT_DIRECTION, false),
+                isAutoStopMic = prefs.getBoolean(KEY_AUTO_STOP_MIC, false)
             )
         }
     )
@@ -188,7 +192,12 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 gemma.initialize(_uiState.value.currentModel)
                 tts.initialize()
                 refreshTtsAvailability()
-                _uiState.update { it.copy(status = "Ready", isModelLoaded = true) }
+                _uiState.update {
+                    it.copy(
+                        status = "Ready",
+                        isModelLoaded = true
+                    )
+                }
                 preloadTranslateModelsOnceIfSafe()
             } catch (e: Exception) {
                 _uiState.update { it.copy(status = "Model load failed: ${e.message}") }
@@ -258,6 +267,11 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     fun setExplicitDirection(enabled: Boolean) {
         _uiState.update { it.copy(isExplicitDirection = enabled) }
         prefs.edit().putBoolean(KEY_EXPLICIT_DIRECTION, enabled).apply()
+    }
+
+    fun setAutoStopMic(enabled: Boolean) {
+        _uiState.update { it.copy(isAutoStopMic = enabled) }
+        prefs.edit().putBoolean(KEY_AUTO_STOP_MIC, enabled).apply()
     }
 
     fun openSettings() {
@@ -336,6 +350,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     put("srcName", t.sourceDisplayName)
                     put("tgt", t.targetLanguage.code)
                     put("spoken", t.spokenAloud)
+                    put("img", t.isImageTurn)
                     put("lowConf", t.lowConfidence)
                     put("qualUnv", t.qualityUnverified)
                     put("trSusp", t.translationSuspect)
@@ -379,6 +394,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         sourceDisplayName = srcName,
                         targetLanguage = tgt,
                         spokenAloud = obj.getBoolean("spoken"),
+                        isImageTurn = obj.optBoolean("img", thumbBytes != null),
                         lowConfidence = obj.optBoolean("lowConf", false),
                         qualityUnverified = obj.optBoolean("qualUnv", false),
                         translationSuspect = obj.optBoolean("trSusp", false),
@@ -440,7 +456,9 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
      * modes the target is null and direction is decided downstream.
      */
     fun onPushToTalkPressed(directTarget: Language? = null) {
+        if (_uiState.value.isRecording) return
         recordingJob = viewModelScope.launch {
+            val autoStop = _uiState.value.isAutoStopMic
             _uiState.update {
                 it.copy(
                     isRecording = true,
@@ -449,7 +467,15 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
             audioCapture.startRecording()
-            capturedAudio = audioCapture.collectAudio()
+            capturedAudio = if (autoStop) {
+                audioCapture.collectAudioUntilSilence()
+            } else {
+                audioCapture.collectAudio()
+            }
+            if (autoStop) {
+                audioCapture.stopRecording()
+                finishCapturedAudio(capturedAudio)
+            }
         }
     }
 
@@ -458,25 +484,30 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             recordingJob?.join()
-            val audio = capturedAudio
-            if (audio.isEmpty() || !isAudioMeaningful(audio)) {
-                // Silently return to Ready. Passing near-silent audio to Gemma
-                // produces prompt-echo hallucinations like
-                // "English: The speaker is using English."
-                _uiState.update { it.copy(isRecording = false, status = "Ready") }
-                return@launch
-            }
+            finishCapturedAudio(capturedAudio)
+        }
+    }
 
-            _uiState.update {
-                it.copy(
-                    isRecording = false,
-                    isProcessing = true,
-                    status = "Translating..."
-                )
-            }
+    private suspend fun finishCapturedAudio(audio: ByteArray) {
+        if (!_uiState.value.isRecording) return
+        if (audio.isEmpty() || !isAudioMeaningful(audio)) {
+            // Silently return to Ready. Passing near-silent audio to Gemma
+            // produces prompt-echo hallucinations like
+            // "English: The speaker is using English."
+            _uiState.update { it.copy(isRecording = false, status = "Ready") }
+            return
+        }
 
-            try {
-                val s = _uiState.value
+        _uiState.update {
+            it.copy(
+                isRecording = false,
+                isProcessing = true,
+                status = "Translating..."
+            )
+        }
+
+        try {
+            val s = _uiState.value
 
                 // Direct-translation mode: Gemma 4 AST — audio goes in and
                 // translated text comes out in one call. Paired mode defaults
@@ -527,7 +558,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                         tts.speak(directTranslation, directTarget.locale)
                         _uiState.update { it.copy(status = "Ready") }
                     }
-                    return@launch
+                    return
                 }
 
                 // Two paths: open auto-detect (ML Kit language ID across ~110
@@ -695,19 +726,17 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                     tts.speak(translation, target.locale)
                     _uiState.update { it.copy(status = "Ready") }
                 }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(status = "Error: ${e.message}") }
-            } finally {
-                _uiState.update { it.copy(isProcessing = false) }
-            }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(status = "Error: ${e.message}") }
+        } finally {
+            _uiState.update { it.copy(isProcessing = false) }
         }
     }
 
     /**
-     * Translate text visible in a picked/captured image. Gemma 4 does OCR
-     * and translation in one call. Target follows the same direction rules
-     * as voice: English in auto-detect mode, languageB in paired mode. The
-     * user swaps A/B to change direction (same contract as voice turns).
+     * Translate text visible in a picked/captured image. Gemma 4 handles OCR,
+     * then Gemma text translation handles the primary translation. ML Kit is
+     * retained as a fallback for blank/echoed Gemma translation output.
      */
     /** Gallery/photo-picker entry point. Reads bytes from the URI and delegates. */
     fun processImage(uri: Uri) {
@@ -752,6 +781,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 sourceDisplayName = "Photo",
                 targetLanguage = target,
                 spokenAloud = false,
+                isImageTurn = true,
                 thumbnailJpeg = thumb
             )
             val placeholderIndex = _uiState.value.turns.size
@@ -836,15 +866,30 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 // Step 3: if source == target, OCR result IS the translation.
+                // Otherwise prefer Gemma for the text translation. ML Kit is
+                // fast but tends to produce odd literal errors on noisy OCR
+                // snippets because it sees only raw text, not task context.
                 val translation: String = if (detectedSourceIso.equals(target.code, ignoreCase = true)) {
                     ocr
                 } else {
-                    val translated = textTranslator.translate(
-                        text = ocr,
-                        sourceIso = detectedSourceIso,
-                        targetIso = target.code
-                    )
-                    translated ?: "(translation unavailable)"
+                    val sourceName = outOfPairWarning ?: detectedSource.displayName
+                    val gemmaTranslation = runCatching {
+                        gemma.translate(ocr, sourceName, target)
+                    }.onFailure {
+                        Log.w("TranslatorViewModel", "Gemma photo text translation failed", it)
+                    }.getOrNull()
+
+                    if (isUsablePhotoTranslation(gemmaTranslation, ocr, target)) {
+                        gemmaTranslation!!.trim()
+                    } else {
+                        val translated = textTranslator.translate(
+                            text = ocr,
+                            sourceIso = detectedSourceIso,
+                            targetIso = target.code
+                        )
+                        translated ?: gemmaTranslation?.takeIf { it.isNotBlank() }
+                            ?: "(translation unavailable)"
+                    }
                 }
 
                 val finalTurn = placeholder.copy(
@@ -876,17 +921,16 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Downsample the picked image to a ~256px-long-edge JPEG (~10-30 KB)
-     * for bubble preview. We don't need full resolution to recognize a
-     * photo thumbnail, and storing full bytes per turn would balloon
-     * memory on long sessions.
+     * Downsample the picked image to a bounded preview JPEG. This is large
+     * enough for the tap-to-view photo preview while avoiding full Pixel
+     * camera frames in conversation memory.
      */
     private fun makeThumbnail(raw: ByteArray): ByteArray? = try {
         val opts = android.graphics.BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
         android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
-        val targetLongEdge = 256
+        val targetLongEdge = 1024
         val longEdge = maxOf(opts.outWidth, opts.outHeight)
         var sample = 1
         while (longEdge / (sample * 2) >= targetLongEdge) sample *= 2
@@ -896,7 +940,7 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         val bmp = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, decodeOpts)
             ?: return null
         val out = java.io.ByteArrayOutputStream()
-        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, out)
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
         bmp.recycle()
         out.toByteArray()
     } catch (t: Throwable) {
@@ -940,6 +984,26 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
         Log.w("TranslatorViewModel", "Inference image resize failed", t)
         raw
     }
+
+    private suspend fun isUsablePhotoTranslation(
+        translation: String?,
+        sourceText: String,
+        target: Language
+    ): Boolean {
+        val cleaned = translation?.trim().orEmpty()
+        if (cleaned.isBlank()) return false
+        if (cleaned.equals("(translation unavailable)", ignoreCase = true)) return false
+        if (normalizeForEchoCheck(cleaned) == normalizeForEchoCheck(sourceText)) return false
+
+        val outputCheck = languageId.identify(cleaned)
+        return outputCheck !is ExternalLanguageId.Result.Detected ||
+            outputCheck.code == target.code ||
+            outputCheck.confidence < 0.5f
+    }
+
+    private fun normalizeForEchoCheck(text: String): String =
+        text.lowercase()
+            .filter { it.isLetterOrDigit() }
 
     override fun onCleared() {
         super.onCleared()

@@ -348,6 +348,39 @@ The one remaining manual step is the Gemma model itself. The `.litertlm` file is
 
 ---
 
+## Direct Translation Mode (Gemma 4 AST)
+
+A Settings toggle exposes a second voice pipeline: **Gemma 4 AST** (audio-to-translated-text in a single inference). Compared to the default transcribe→translate path it cuts one full Gemma decode per turn — roughly 2× faster wall-clock — at the cost of not producing an intermediate transcription.
+
+The wrinkle direct mode introduces is direction selection. With a fixed-target AST call, the model needs to know up front which language to translate *into*; we can't infer it from a transcription that doesn't exist. We tried two approaches before settling on the third:
+
+1. **Internal LID** — prompt Gemma to decide which of A or B was spoken and translate to the other, returning a `LANG: xx` header so we can pick the TTS locale. Worked unreliably on E2B (small models collapse "translate-to-the-other" into a plain transcription) and was inconsistent on E4B.
+2. **Auto-alternation** — flip target A↔B each turn under the assumption that conversation alternates. Brittle when a single speaker takes multiple consecutive turns.
+3. **Direction-explicit dual mic** — what shipped. In paired+direct mode the single mic is replaced by two direction-specific mics flanking the row edges (`EN→ES` left, `ES→EN` right). The speaker presses the side that matches the direction they're about to speak; the AST call goes through with a known fixed target. One inference per press, no LID guesswork, and the physical-layout cue (each speaker has "their" button on their side of the phone) makes the interpretation cadence obvious without instruction.
+
+Auto-detect + direct mode keeps the single mic — auto already targets English regardless of source, so direction is unambiguous.
+
+---
+
+## Localized UI Chrome
+
+The app's surface — buttons, status messages, screen titles, empty-state placeholders — is translated into the operator's selected language (the language A dropdown). Switching the dropdown re-renders the entire chrome instantly, in-process, without an app restart. All thirteen supported languages are covered:
+
+- Top-bar buttons (About, Disclaimer, Settings, Clear)
+- Model selector chip labels (Faster, Higher Accuracy)
+- Status row (Loading…, Listening…, Translating…, Speaking…, Ready)
+- Camera / Upload-photo button labels
+- Hold-to-speak label
+- Settings-screen toggles (Auto-detect, Direct translation) including descriptive subtitles
+- About and Disclaimer screen chrome
+- Conversation card empty-state placeholder
+
+Implementation is a single `UiStrings` data class with one entry per language in `Strings.kt`, looked up via `Strings.forLanguage(languageA)`. The disclaimer body and About body are separately localized inside their own files (`Disclaimer.kt`, `AboutText.kt`) since those are paragraphs, not chrome.
+
+This means a Spanish-speaking aid worker, a Vietnamese clinician, or a Russian field translator each see an interface in their own language from the moment they install the app — without depending on the device's system locale and without needing the operator to be literate in English to use the tool. The same translation tool is itself accessible across the language barriers it's designed to bridge.
+
+---
+
 ## Gemma 4 Model Usage
 
 Puente-Multi leverages three distinct capabilities of the Gemma 4 architecture:

@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.graphics.asImageBitmap
@@ -40,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -60,11 +62,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -101,6 +106,7 @@ class MainActivity : ComponentActivity() {
 fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var previewPhotoJpeg by remember { mutableStateOf<ByteArray?>(null) }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -195,9 +201,11 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             isAutoDetect = uiState.isAutoDetect,
             isDirectTranslation = uiState.isDirectTranslation,
             isExplicitDirection = uiState.isExplicitDirection,
+            isAutoStopMic = uiState.isAutoStopMic,
             onSetAutoDetect = viewModel::setAutoDetect,
             onSetDirectTranslation = viewModel::setDirectTranslation,
             onSetExplicitDirection = viewModel::setExplicitDirection,
+            onSetAutoStopMic = viewModel::setAutoStopMic,
             onDismiss = viewModel::closeSettings
         )
         return
@@ -394,7 +402,11 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                     )
                 } else {
                     uiState.turns.forEachIndexed { index, turn ->
-                        ConversationBubble(turn, strings)
+                        ConversationBubble(
+                            turn = turn,
+                            strings = strings,
+                            onPhotoClick = { previewPhotoJpeg = it }
+                        )
                         if (index < uiState.turns.lastIndex) {
                             Spacer(modifier = Modifier.height(16.dp))
                         }
@@ -415,31 +427,36 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
             horizontalArrangement = if (showDualMic) Arrangement.spacedBy(8.dp) else Arrangement.Center
         ) {
             if (showDualMic) {
-                PushToTalkButton(
-                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageB,
-                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
-                    label = "${uiState.languageA.code.uppercase()}→${uiState.languageB.code.uppercase()}",
-                    wide = true,
-                    modifier = Modifier.weight(1f),
+	                PushToTalkButton(
+	                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageB,
+	                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing &&
+	                        (!uiState.isRecording || uiState.pendingDirectTarget == uiState.languageB),
+	                    autoStop = uiState.isAutoStopMic,
+	                    label = "${uiState.languageA.code.uppercase()}→${uiState.languageB.code.uppercase()}",
+	                    wide = true,
+	                    modifier = Modifier.weight(1f),
                     onPressStart = { viewModel.onPushToTalkPressed(uiState.languageB) },
                     onPressEnd = viewModel::onPushToTalkReleased
                 )
-                PushToTalkButton(
-                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageA,
-                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
-                    label = "${uiState.languageB.code.uppercase()}→${uiState.languageA.code.uppercase()}",
-                    wide = true,
-                    modifier = Modifier.weight(1f),
+	                PushToTalkButton(
+	                    isRecording = uiState.isRecording && uiState.pendingDirectTarget == uiState.languageA,
+	                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing &&
+	                        (!uiState.isRecording || uiState.pendingDirectTarget == uiState.languageA),
+	                    autoStop = uiState.isAutoStopMic,
+	                    label = "${uiState.languageB.code.uppercase()}→${uiState.languageA.code.uppercase()}",
+	                    wide = true,
+	                    modifier = Modifier.weight(1f),
                     onPressStart = { viewModel.onPushToTalkPressed(uiState.languageA) },
                     onPressEnd = viewModel::onPushToTalkReleased
                 )
             } else {
-                PushToTalkButton(
-                    isRecording = uiState.isRecording,
-                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
-                    onPressStart = { viewModel.onPushToTalkPressed() },
-                    onPressEnd = viewModel::onPushToTalkReleased
-                )
+	                PushToTalkButton(
+	                    isRecording = uiState.isRecording,
+	                    enabled = hasPermission && uiState.isModelLoaded && !uiState.isProcessing,
+	                    autoStop = uiState.isAutoStopMic,
+	                    onPressStart = { viewModel.onPushToTalkPressed() },
+	                    onPressEnd = viewModel::onPushToTalkReleased
+	                )
             }
         }
 
@@ -482,12 +499,82 @@ fun TranslatorScreen(viewModel: TranslatorViewModel = viewModel()) {
                 !hasPermission -> strings.micPermissionRequired
                 !uiState.isModelLoaded -> strings.loadingModels
                 uiState.isRecording -> strings.statusListening
+                uiState.isAutoStopMic -> strings.tapToSpeak
                 else -> strings.holdToSpeak
             },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+    }
+
+    previewPhotoJpeg?.let { jpeg ->
+        PhotoPreviewDialog(
+            jpeg = jpeg,
+            onDismiss = { previewPhotoJpeg = null }
+        )
+    }
+}
+
+@Composable
+private fun PhotoPreviewDialog(
+    jpeg: ByteArray,
+    onDismiss: () -> Unit
+) {
+    val bmp = remember(jpeg) {
+        android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.92f)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .padding(16.dp)
+            ) {
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Photo preview",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = 64.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(48.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                            shape = CircleShape
+                        )
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "×",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Text("Close")
+                }
+            }
+        }
     }
 }
 
@@ -504,9 +591,11 @@ private fun SettingsScreen(
     isAutoDetect: Boolean,
     isDirectTranslation: Boolean,
     isExplicitDirection: Boolean,
+    isAutoStopMic: Boolean,
     onSetAutoDetect: (Boolean) -> Unit,
     onSetDirectTranslation: (Boolean) -> Unit,
     onSetExplicitDirection: (Boolean) -> Unit,
+    onSetAutoStopMic: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     // Outer column: header + scrollable middle + Done button. The Done
@@ -573,6 +662,13 @@ private fun SettingsScreen(
                 onCheckedChange = onSetDirectTranslation,
                 title = strings.directTranslationTitle,
                 subtitle = strings.directTranslationSubtitle
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            SettingRow(
+                checked = isAutoStopMic,
+                onCheckedChange = onSetAutoStopMic,
+                title = strings.autoStopMicTitle,
+                subtitle = strings.autoStopMicSubtitle
             )
             Spacer(modifier = Modifier.height(20.dp))
             SettingRow(
@@ -754,6 +850,7 @@ private fun LanguageDropdown(
 private fun PushToTalkButton(
     isRecording: Boolean,
     enabled: Boolean,
+    autoStop: Boolean,
     onPressStart: () -> Unit,
     onPressEnd: () -> Unit,
     label: String? = null,
@@ -783,12 +880,18 @@ private fun PushToTalkButton(
             )
             .then(
                 if (enabled) {
-                    Modifier.pointerInput(Unit) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            onPressStart()
-                            waitForUpOrCancellation()
-                            onPressEnd()
+                    if (autoStop) {
+                        Modifier.clickable {
+                            if (isRecording) onPressEnd() else onPressStart()
+                        }
+                    } else {
+                        Modifier.pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                onPressStart()
+                                waitForUpOrCancellation()
+                                onPressEnd()
+                            }
                         }
                     }
                 } else {
@@ -797,21 +900,55 @@ private fun PushToTalkButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = when {
-                isRecording -> "REC"
-                label != null -> label
-                else -> "MIC"
-            },
-            color = textColor,
-            fontWeight = FontWeight.Bold,
-            fontSize = if (label != null) 14.sp else 16.sp
-        )
+        if (autoStop && isRecording) {
+            if (wide) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Stop,
+                        contentDescription = "Stop recording",
+                        tint = textColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "STOP",
+                        color = textColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Stop,
+                    contentDescription = "Stop recording",
+                    tint = textColor,
+                    modifier = Modifier.size(34.dp)
+                )
+            }
+        } else {
+            Text(
+                text = when {
+                    isRecording -> "REC"
+                    label != null -> label
+                    else -> "MIC"
+                },
+                color = textColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = if (label != null) 14.sp else 16.sp
+            )
+        }
     }
 }
 
 @Composable
-private fun ConversationBubble(turn: ConversationTurn, strings: UiStrings) {
+private fun ConversationBubble(
+    turn: ConversationTurn,
+    strings: UiStrings,
+    onPhotoClick: (ByteArray) -> Unit
+) {
     SelectionContainer {
         Column(modifier = Modifier.fillMaxWidth()) {
             val sourceLabel = "${turn.sourceDisplayName} → ${turn.targetLanguage.displayName}"
@@ -850,10 +987,11 @@ private fun ConversationBubble(turn: ConversationTurn, strings: UiStrings) {
             // Image-translation thumbnail (set only for photo turns). Decode
             // from the compressed JPEG bytes stored on the turn. Small
             // fixed-width cap so long signs don't blow out row height.
-            if (turn.thumbnailJpeg != null) {
-                val bmp = remember(turn.thumbnailJpeg) {
+            val photoJpeg = turn.thumbnailJpeg
+            if (photoJpeg != null) {
+                val bmp = remember(photoJpeg) {
                     android.graphics.BitmapFactory.decodeByteArray(
-                        turn.thumbnailJpeg, 0, turn.thumbnailJpeg.size
+                        photoJpeg, 0, photoJpeg.size
                     )
                 }
                 if (bmp != null) {
@@ -862,8 +1000,9 @@ private fun ConversationBubble(turn: ConversationTurn, strings: UiStrings) {
                         contentDescription = "Photo source",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 160.dp),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                            .heightIn(max = 160.dp)
+                            .clickable { onPhotoClick(photoJpeg) },
+                        contentScale = ContentScale.Fit
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                 }
@@ -932,7 +1071,7 @@ private fun ConversationBubble(turn: ConversationTurn, strings: UiStrings) {
             // "Text only" hint only makes sense for voice turns where TTS
             // was expected but unavailable. Image turns are always
             // text-only by design, so showing it there is misleading noise.
-            if (!turn.spokenAloud && turn.thumbnailJpeg == null) {
+            if (!turn.spokenAloud && !turn.isImageTurn) {
                 Text(
                     text = "(text only — no TTS voice installed)",
                     style = MaterialTheme.typography.labelSmall,

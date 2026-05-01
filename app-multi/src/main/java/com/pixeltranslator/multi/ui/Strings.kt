@@ -23,6 +23,7 @@ data class UiStrings(
     val micPermissionRequired: String,
     val loadingModels: String,
     val holdToSpeak: String,
+    val tapToSpeak: String,
     val takePhotoButton: String,
     val uploadPhotoButton: String,
     /** Takes both languages' native names and returns the empty-state sentence. */
@@ -39,6 +40,8 @@ data class UiStrings(
     val autoDetectSubtitle: String,
     val directTranslationTitle: String,
     val directTranslationSubtitle: String,
+    val autoStopMicTitle: String,
+    val autoStopMicSubtitle: String,
     val instructionsTitle: String,
     val instructionsBody: String,
     /** Photo: detected language not in your pair. Receives the detected language name. */
@@ -70,6 +73,7 @@ object Strings {
             micPermissionRequired = "Microphone permission required",
             loadingModels = "Loading models…",
             holdToSpeak = "Hold to speak",
+            tapToSpeak = "Tap to speak",
             takePhotoButton = "Take photo",
             uploadPhotoButton = "Upload photo",
             emptyPlaceholder = { a, b -> "Speak in $a or $b.\nThe app will translate into the other." },
@@ -83,6 +87,8 @@ object Strings {
             autoDetectSubtitle = "Detects any language, translates into the language selected above",
             directTranslationTitle = "Direct translation",
             directTranslationSubtitle = "Faster — audio to translation in one step",
+            autoStopMicTitle = "Auto-stop microphone",
+            autoStopMicSubtitle = "Tap once to start recording. The app stops after you finish speaking; tap again to stop manually.",
             instructionsTitle = "How to use",
             instructionsBody = """
                 • Voice: Hold the microphone, speak, then release. The app translates and plays the result aloud.
@@ -118,6 +124,7 @@ object Strings {
             micPermissionRequired = "Se necesita permiso del micrófono",
             loadingModels = "Cargando modelos…",
             holdToSpeak = "Mantén presionado para hablar",
+            tapToSpeak = "Toca para hablar",
             takePhotoButton = "Tomar foto",
             uploadPhotoButton = "Subir foto",
             emptyPlaceholder = { a, b -> "Habla en $a o $b.\nLa app traducirá al otro idioma." },
@@ -131,6 +138,8 @@ object Strings {
             autoDetectSubtitle = "Detecta cualquier idioma, traduce al idioma seleccionado arriba",
             directTranslationTitle = "Traducción directa",
             directTranslationSubtitle = "Más rápida — audio a traducción en un paso",
+            autoStopMicTitle = "Micrófono con parada automática",
+            autoStopMicSubtitle = "Toca una vez para grabar. La app se detiene cuando terminas de hablar; toca de nuevo para detener manualmente.",
             instructionsTitle = "Cómo usar",
             instructionsBody = """
                 • Voz: Mantén presionado el micrófono, habla y suelta. La app traduce y reproduce el resultado en voz alta.
@@ -166,6 +175,7 @@ object Strings {
             micPermissionRequired = "Autorisation du microphone requise",
             loadingModels = "Chargement des modèles…",
             holdToSpeak = "Maintenir pour parler",
+            tapToSpeak = "Touchez pour parler",
             takePhotoButton = "Prendre photo",
             uploadPhotoButton = "Importer photo",
             emptyPlaceholder = { a, b -> "Parlez en $a ou en $b.\nL'app traduira vers l'autre langue." },
@@ -179,6 +189,8 @@ object Strings {
             autoDetectSubtitle = "Détecte toute langue, traduit dans la langue sélectionnée ci-dessus",
             directTranslationTitle = "Traduction directe",
             directTranslationSubtitle = "Plus rapide — audio à traduction en une étape",
+            autoStopMicTitle = "Micro à arrêt automatique",
+            autoStopMicSubtitle = "Touchez une fois pour enregistrer. L'app s'arrête quand vous avez fini de parler; touchez encore pour arrêter manuellement.",
             instructionsTitle = "Mode d'emploi",
             instructionsBody = """
                 • Voix : Maintenez le micro, parlez, puis relâchez. L'app traduit et lit le résultat à voix haute.
@@ -214,6 +226,7 @@ object Strings {
             micPermissionRequired = "Mikrofon-Berechtigung erforderlich",
             loadingModels = "Modelle werden geladen…",
             holdToSpeak = "Zum Sprechen gedrückt halten",
+            tapToSpeak = "Zum Sprechen tippen",
             takePhotoButton = "Foto aufnehmen",
             uploadPhotoButton = "Foto hochladen",
             emptyPlaceholder = { a, b -> "Sprechen Sie $a oder $b.\nDie App übersetzt in die andere Sprache." },
@@ -227,6 +240,8 @@ object Strings {
             autoDetectSubtitle = "Erkennt jede Sprache, übersetzt in die oben gewählte Sprache",
             directTranslationTitle = "Direkte Übersetzung",
             directTranslationSubtitle = "Schneller — Audio direkt zur Übersetzung",
+            autoStopMicTitle = "Mikrofon automatisch stoppen",
+            autoStopMicSubtitle = "Einmal tippen, um aufzunehmen. Die App stoppt, wenn Sie fertig gesprochen haben; erneut tippen, um manuell zu stoppen.",
             instructionsTitle = "Bedienung",
             instructionsBody = """
                 • Sprache: Mikrofon gedrückt halten, sprechen, loslassen. Die App übersetzt und liest das Ergebnis vor.
@@ -262,6 +277,7 @@ object Strings {
             micPermissionRequired = "Permissão do microfone necessária",
             loadingModels = "Carregando modelos…",
             holdToSpeak = "Mantenha pressionado para falar",
+            tapToSpeak = "Toque para falar",
             takePhotoButton = "Tirar foto",
             uploadPhotoButton = "Enviar foto",
             emptyPlaceholder = { a, b -> "Fale em $a ou $b.\nO app traduzirá para o outro idioma." },
@@ -275,6 +291,8 @@ object Strings {
             autoDetectSubtitle = "Detecta qualquer idioma, traduz para o idioma selecionado acima",
             directTranslationTitle = "Tradução direta",
             directTranslationSubtitle = "Mais rápido — áudio para tradução em um passo",
+            autoStopMicTitle = "Microfone com parada automática",
+            autoStopMicSubtitle = "Toque uma vez para gravar. O app para quando você termina de falar; toque de novo para parar manualmente.",
             instructionsTitle = "Como usar",
             instructionsBody = """
                 • Voz: Mantenha pressionado o microfone, fale e solte. O app traduz e reproduz o resultado em voz alta.
@@ -310,6 +328,7 @@ object Strings {
             micPermissionRequired = "Permesso microfono richiesto",
             loadingModels = "Caricamento modelli…",
             holdToSpeak = "Tieni premuto per parlare",
+            tapToSpeak = "Tocca per parlare",
             takePhotoButton = "Scatta foto",
             uploadPhotoButton = "Carica foto",
             emptyPlaceholder = { a, b -> "Parla in $a o $b.\nL'app tradurrà nell'altra lingua." },
@@ -323,6 +342,8 @@ object Strings {
             autoDetectSubtitle = "Rileva qualsiasi lingua, traduce nella lingua selezionata sopra",
             directTranslationTitle = "Traduzione diretta",
             directTranslationSubtitle = "Più veloce — audio a traduzione in un passaggio",
+            autoStopMicTitle = "Microfono con arresto automatico",
+            autoStopMicSubtitle = "Tocca una volta per registrare. L'app si ferma quando hai finito di parlare; tocca di nuovo per fermare manualmente.",
             instructionsTitle = "Come si usa",
             instructionsBody = """
                 • Voce: Tieni premuto il microfono, parla, poi rilascia. L'app traduce e riproduce il risultato ad alta voce.
@@ -358,6 +379,7 @@ object Strings {
             micPermissionRequired = "需要麦克风权限",
             loadingModels = "正在加载模型…",
             holdToSpeak = "按住说话",
+            tapToSpeak = "点击说话",
             takePhotoButton = "拍照",
             uploadPhotoButton = "上传照片",
             emptyPlaceholder = { a, b -> "请说 $a 或 $b。\n应用将翻译为另一种语言。" },
@@ -371,6 +393,8 @@ object Strings {
             autoDetectSubtitle = "检测任何语言，翻译为上面选定的语言",
             directTranslationTitle = "直接翻译",
             directTranslationSubtitle = "更快——音频一步直达翻译",
+            autoStopMicTitle = "麦克风自动停止",
+            autoStopMicSubtitle = "点击一次开始录音。说完后应用会自动停止；再次点击可手动停止。",
             instructionsTitle = "使用方法",
             instructionsBody = """
                 • 语音：按住麦克风说话，松开即可。应用会翻译并大声朗读结果。
@@ -406,6 +430,7 @@ object Strings {
             micPermissionRequired = "マイクの権限が必要です",
             loadingModels = "モデルを読み込み中…",
             holdToSpeak = "押しながら話す",
+            tapToSpeak = "タップして話す",
             takePhotoButton = "写真を撮る",
             uploadPhotoButton = "写真を選ぶ",
             emptyPlaceholder = { a, b -> "$a または $b で話してください。\nアプリがもう一方の言語に翻訳します。" },
@@ -419,6 +444,8 @@ object Strings {
             autoDetectSubtitle = "あらゆる言語を検出し、上で選んだ言語に翻訳",
             directTranslationTitle = "直接翻訳",
             directTranslationSubtitle = "高速 — 音声から翻訳まで一段階",
+            autoStopMicTitle = "マイクの自動停止",
+            autoStopMicSubtitle = "一度タップして録音を開始します。話し終えるとアプリが停止します。もう一度タップすると手動で停止できます。",
             instructionsTitle = "使い方",
             instructionsBody = """
                 • 音声：マイクを押しながら話し、離します。アプリが翻訳し、結果を読み上げます。
@@ -454,6 +481,7 @@ object Strings {
             micPermissionRequired = "마이크 권한이 필요합니다",
             loadingModels = "모델 로딩 중…",
             holdToSpeak = "누르고 말하기",
+            tapToSpeak = "탭하여 말하기",
             takePhotoButton = "사진 찍기",
             uploadPhotoButton = "사진 업로드",
             emptyPlaceholder = { a, b -> "$a 또는 ${b}로 말씀해 주세요.\n앱이 다른 언어로 번역합니다." },
@@ -467,6 +495,8 @@ object Strings {
             autoDetectSubtitle = "모든 언어를 감지하여 위에서 선택한 언어로 번역",
             directTranslationTitle = "직접 번역",
             directTranslationSubtitle = "더 빠름 — 오디오를 한 번에 번역",
+            autoStopMicTitle = "마이크 자동 정지",
+            autoStopMicSubtitle = "한 번 탭하면 녹음이 시작됩니다. 말을 마치면 앱이 멈추며, 다시 탭하면 수동으로 멈출 수 있습니다.",
             instructionsTitle = "사용 방법",
             instructionsBody = """
                 • 음성: 마이크를 누른 채 말한 뒤 손을 떼세요. 앱이 번역하여 결과를 소리 내어 읽어줍니다.
@@ -502,6 +532,7 @@ object Strings {
             micPermissionRequired = "माइक्रोफ़ोन की अनुमति आवश्यक है",
             loadingModels = "मॉडल लोड हो रहे हैं…",
             holdToSpeak = "बोलने के लिए दबाए रखें",
+            tapToSpeak = "बोलने के लिए टैप करें",
             takePhotoButton = "फोटो लें",
             uploadPhotoButton = "फोटो अपलोड",
             emptyPlaceholder = { a, b -> "$a या $b में बोलें।\nऐप दूसरी भाषा में अनुवाद करेगा।" },
@@ -515,6 +546,8 @@ object Strings {
             autoDetectSubtitle = "किसी भी भाषा को पहचानता है, ऊपर चुनी गई भाषा में अनुवाद करता है",
             directTranslationTitle = "सीधा अनुवाद",
             directTranslationSubtitle = "तेज़ — एक चरण में ऑडियो से अनुवाद",
+            autoStopMicTitle = "माइक्रोफ़ोन अपने-आप बंद",
+            autoStopMicSubtitle = "रिकॉर्डिंग शुरू करने के लिए एक बार टैप करें। बोलना समाप्त होने पर ऐप रुक जाता है; मैन्युअल रूप से रोकने के लिए फिर टैप करें.",
             instructionsTitle = "उपयोग कैसे करें",
             instructionsBody = """
                 • आवाज़: माइक्रोफ़ोन दबाए रखें, बोलें, फिर छोड़ दें। ऐप अनुवाद करेगा और परिणाम ज़ोर से पढ़कर सुनाएगा।
@@ -550,6 +583,7 @@ object Strings {
             micPermissionRequired = "يتطلب إذن الميكروفون",
             loadingModels = "جارٍ تحميل النماذج…",
             holdToSpeak = "اضغط مطولاً للتحدث",
+            tapToSpeak = "اضغط للتحدث",
             takePhotoButton = "التقاط صورة",
             uploadPhotoButton = "تحميل صورة",
             emptyPlaceholder = { a, b -> "تحدث بـ$a أو $b.\nسيقوم التطبيق بالترجمة إلى اللغة الأخرى." },
@@ -563,6 +597,8 @@ object Strings {
             autoDetectSubtitle = "يكتشف أي لغة ويترجم إلى اللغة المحددة أعلاه",
             directTranslationTitle = "ترجمة مباشرة",
             directTranslationSubtitle = "أسرع — من الصوت إلى الترجمة في خطوة واحدة",
+            autoStopMicTitle = "إيقاف الميكروفون تلقائيًا",
+            autoStopMicSubtitle = "اضغط مرة واحدة لبدء التسجيل. يتوقف التطبيق بعد انتهاء كلامك؛ اضغط مرة أخرى للإيقاف يدويًا.",
             instructionsTitle = "طريقة الاستخدام",
             instructionsBody = """
                 • الصوت: اضغط مطولاً على الميكروفون، تحدث، ثم اترك الزر. يقوم التطبيق بالترجمة وقراءة النتيجة بصوت عالٍ.
@@ -598,6 +634,7 @@ object Strings {
             micPermissionRequired = "Требуется разрешение на микрофон",
             loadingModels = "Загрузка моделей…",
             holdToSpeak = "Удерживайте, чтобы говорить",
+            tapToSpeak = "Нажмите, чтобы говорить",
             takePhotoButton = "Сделать фото",
             uploadPhotoButton = "Загрузить фото",
             emptyPlaceholder = { a, b -> "Говорите на $a или $b.\nПриложение переведёт на другой язык." },
@@ -611,6 +648,8 @@ object Strings {
             autoDetectSubtitle = "Определяет любой язык, переводит на выбранный выше",
             directTranslationTitle = "Прямой перевод",
             directTranslationSubtitle = "Быстрее — звук в перевод за один шаг",
+            autoStopMicTitle = "Автоостановка микрофона",
+            autoStopMicSubtitle = "Нажмите один раз, чтобы начать запись. Приложение остановится, когда вы закончите говорить; нажмите ещё раз, чтобы остановить вручную.",
             instructionsTitle = "Как пользоваться",
             instructionsBody = """
                 • Голос: удерживайте микрофон, говорите, затем отпустите. Приложение переведёт и зачитает результат вслух.
@@ -646,6 +685,7 @@ object Strings {
             micPermissionRequired = "Yêu cầu quyền truy cập micrô",
             loadingModels = "Đang tải mô hình…",
             holdToSpeak = "Giữ để nói",
+            tapToSpeak = "Chạm để nói",
             takePhotoButton = "Chụp ảnh",
             uploadPhotoButton = "Tải ảnh lên",
             emptyPlaceholder = { a, b -> "Hãy nói bằng $a hoặc $b.\nỨng dụng sẽ dịch sang ngôn ngữ còn lại." },
@@ -659,6 +699,8 @@ object Strings {
             autoDetectSubtitle = "Phát hiện mọi ngôn ngữ, dịch sang ngôn ngữ đã chọn ở trên",
             directTranslationTitle = "Dịch trực tiếp",
             directTranslationSubtitle = "Nhanh hơn — từ âm thanh đến bản dịch trong một bước",
+            autoStopMicTitle = "Micrô tự dừng",
+            autoStopMicSubtitle = "Chạm một lần để bắt đầu ghi âm. Ứng dụng sẽ dừng khi bạn nói xong; chạm lại để dừng thủ công.",
             instructionsTitle = "Cách sử dụng",
             instructionsBody = """
                 • Giọng nói: Giữ micrô, nói, rồi thả ra. Ứng dụng sẽ dịch và đọc to kết quả.
