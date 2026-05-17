@@ -1,8 +1,8 @@
-# Puente-Multi
+# Puente-Bridge
 
 Offline speech and photo translation on Android using Gemma 4 E2B/E4B.
 
-Puente-Multi is an on-device translation app built for the Gemma 4 Good Hackathon. It runs on a Pixel-class Android device and uses Gemma 4 Edge models through LiteRT-LM for multimodal speech and image understanding. The goal is practical digital equity: real-time translation that still works when connectivity is poor, privacy matters, or cloud translation is not appropriate.
+Puente-Bridge is an on-device translation app built for the Gemma 4 Good Hackathon. It runs on a Pixel-class Android device and uses Gemma 4 Edge models through LiteRT-LM for multimodal speech and image understanding. The goal is practical digital equity: real-time translation that still works when connectivity is poor, privacy matters, or cloud translation is not appropriate.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ Puente-Multi is an on-device translation app built for the Gemma 4 Good Hackatho
 - Supports a one-mic paired flow that auto-routes each turn to the other language.
 - Supports Manual direction mode with two target-specific mics when the operator wants to lock direction per turn.
 - Supports direct audio-to-translation mode for lower latency.
-- Supports open-set Auto-detect mode for unknown speakers, translating into the app language.
+- Supports Auto-detect mode across the curated language set for unknown speakers, translating into the selected app language.
 - Translates visible text in photos such as signs, menus, labels, notes, and forms.
 - Runs speech, OCR, translation routing, and TTS locally on the phone.
 
@@ -87,8 +87,7 @@ After the Gemma model files are provisioned on-device, inference runs offline.
 
 ## Project Structure
 
-- `app-multi/`: multilingual hackathon app.
-- `app/`: earlier bilingual app.
+- `app-multi/`: Puente-Bridge hackathon app.
 - `WRITEUP_MULTILINGUAL.md`: longer project write-up for submission/storytelling.
 - `ENGINEERING_CHALLENGES.md`: implementation notes and postmortems.
 
@@ -105,7 +104,7 @@ The debug APK has been tested against a Pixel 10 Pro-class device.
 
 ## Model Setup
 
-Model files are not committed to this repository. Place them in the shared external storage directory used by both app variants:
+Model files are not committed to this repository. Place them in the shared external storage directory used by the app:
 
 ```bash
 adb shell mkdir -p /sdcard/Download/litertlm-models
@@ -124,7 +123,7 @@ On first launch, grant all-files access when prompted.
 
 ## Build
 
-Build the multilingual debug APK:
+Build the Puente-Bridge debug APK:
 
 ```bash
 ./gradlew :app-multi:assembleDebug
@@ -193,7 +192,7 @@ These changes are documented in `ENGINEERING_CHALLENGES.md`.
 
 ## Healthcare and Safety Note
 
-Puente-Multi does not replace qualified human interpreters where law, policy, or clinical risk requires one. It is intended as a practical aid for low-risk communication, temporary bridging, field contexts, and situations where no interpreter is immediately available. Users should treat output as potentially imperfect and escalate to qualified human interpretation for critical communication.
+Puente-Bridge does not replace qualified human interpreters where law, policy, or clinical risk requires one. It is intended as a practical aid for low-risk communication, temporary bridging, field contexts, and situations where no interpreter is immediately available. Users should treat output as potentially imperfect and escalate to qualified human interpretation for critical communication.
 
 ## Hackathon Submission Assets
 

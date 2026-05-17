@@ -12,9 +12,18 @@
 *.apk
 *.ap_
 *.aab
+*.mp4
 
 # Large model files — download separately, don't commit
+*.litertlm
+*.xnnpack_cache
 app/src/main/assets/*.onnx
 app/src/main/assets/*.bin
 app/src/main/assets/*.litertlm
 app/src/main/assets/*.task
+
+# Removed prototype module kept out of the public submission.
+/app/
+
+# Tool-local notes.
+/.claude/

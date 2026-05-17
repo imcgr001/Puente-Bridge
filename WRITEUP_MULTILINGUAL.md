@@ -1,4 +1,4 @@
-# Puente-Multi: Offline Any-to-Any Speech-to-Speech Translation Across 13 Languages
+# Puente-Bridge: Offline Any-to-Any Speech-to-Speech Translation Across 13 Languages
 
 ## Gemma 4 Good Hackathon Submission | Digital Equity + Global Communication
 
@@ -6,16 +6,16 @@
 
 ## Summary
 
-Puente-Multi is a fully on-device, real-time **speech and image** translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech *and vision* via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Voice translation and photo translation both go through Gemma: photos use Gemma OCR first, then a Gemma text-translation pass for the OCR output. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
+Puente-Bridge is a fully on-device, real-time **speech and image** translator spanning **thirteen languages** that together cover approximately four billion speakers — roughly half of humanity. It runs natively on a Google Pixel 10 Pro using **Gemma 4 E2B/E4B** for multimodal speech *and vision* via **LiteRT-LM** with GPU acceleration on the Tensor G5 NPU. Voice translation and photo translation both go through Gemma: photos use Gemma OCR first, then a Gemma text-translation pass for the OCR output. Text-to-speech output uses Android's native TTS engine with locale-specific voices and graceful text-only fallback when a voice isn't installed.
 
 **No data leaves the device.** All speech processing, transcription, OCR, translation, and audio synthesis occur entirely on the phone. No audio, images, or text are recorded, stored, or transmitted. After the Gemma model files are provisioned on-device, airplane mode is fully supported.
 
-Puente-Multi offers two operating modes that together address the breadth of real-world translation scenarios:
+Puente-Bridge offers two operating modes that together address the breadth of real-world translation scenarios:
 
 - **Paired mode** for the common case — two known speakers having a back-and-forth conversation in two pre-selected languages. Optimized for fluency, with anchored prompting and binary detection.
 - **Auto-detect mode** for the high-stakes case — a single operator who doesn't know in advance which supported language the other person will speak. Gemma transcribes without a language hint, a Kotlin scorer routes the result across the curated language set, and the target is the operator's app language. Designed for disaster response intake, refugee reception, hospital triage, and other "process people of unknown origin" scenarios.
 
-Puente-Multi is a generalization of the earlier EN↔ES translator into a thirteen-way any-to-any tool. It is built for anyone who needs to communicate across the world's major language barriers — in disaster zones, at field clinics, across border crossings, or simply between travelers and locals — in places where internet is unavailable, where privacy is non-negotiable, or where professional interpretation is out of reach.
+Puente-Bridge is built for anyone who needs to communicate across the world's major language barriers — in disaster zones, at field clinics, across border crossings, or simply between travelers and locals — in places where internet is unavailable, where privacy is non-negotiable, or where professional interpretation is out of reach.
 
 ---
 
@@ -32,7 +32,7 @@ The interpreter-access reality in those settings is starkly different from how i
 
 The result is a documented, widespread pattern: LEP patients wait longer, get less time with their providers, are more likely to be discharged with poorly-understood instructions, and experience worse health outcomes than English-proficient patients with otherwise comparable presentations.
 
-That gap — between what the regulations require ("meaningful access") and what frontline staff can actually provide on a given Tuesday afternoon — is the project's motivating problem. Puente-Multi is not designed to *replace* qualified human interpreters in any setting where they're appropriate; it's designed to fill the unavoidable gaps where human interpretation is unavailable, delayed, or cost-prohibitive.
+That gap — between what the regulations require ("meaningful access") and what frontline staff can actually provide on a given Tuesday afternoon — is the project's motivating problem. Puente-Bridge is not designed to *replace* qualified human interpreters in any setting where they're appropriate; it's designed to fill the unavoidable gaps where human interpretation is unavailable, delayed, or cost-prohibitive.
 
 ---
 
@@ -54,23 +54,23 @@ That gap — between what the regulations require ("meaningful access") and what
 | Vietnamese | Tiếng Việt | `vi` | Latin | ~85M |
 | Italian | Italiano | `it` | Latin | ~65M |
 
-The language set was chosen at the intersection of three criteria: (1) strong multilingual coverage in Gemma 4 E2B/E4B training data, (2) availability as a first-party TTS voice on stock Android / Pixel, and (3) aggregate speaker count globally. Any pairing of the thirteen works — the user selects two dropdowns and the app auto-routes between them. Auto-detect mode generalizes this further: any spoken language from the supported set can be identified and translated into English without pre-selection.
+The language set was chosen at the intersection of three criteria: (1) strong multilingual coverage in Gemma 4 E2B/E4B training data, (2) availability as a first-party TTS voice on stock Android / Pixel, and (3) aggregate speaker count globally. Any pairing of the thirteen works — the user selects two dropdowns and the app auto-routes between them. Auto-detect mode generalizes this further: any spoken language from the supported set can be identified and translated into the selected app language without pre-selection.
 
 ---
 
 ## The Problem
 
-Roughly 7,000 languages are spoken worldwide, but twelve of them cover a majority of human communication. The remaining barrier is not lack of *coverage* from translation services — Google Translate, DeepL, Apple Translate, etc. all handle these languages. The barrier is that **every existing translator requires sending your speech to somebody else's server.**
+Roughly 7,000 languages are spoken worldwide, but a small set of major languages covers a large share of day-to-day global communication. Offline translation already exists in consumer products, including Google Translate and Apple Translate. Puente-Bridge is not trying to re-prove that offline translation is useful; it explores what becomes possible when Gemma 4 E2B/E4B runs locally as the core engine for speech understanding, photo OCR, and translation.
 
-That creates three compounding problems:
+That creates three design goals:
 
-1. **No internet, no translation.** Rural communities, disaster response teams, correctional and medical facilities with restricted networks, developing regions with unreliable infrastructure, airplane cabins, underground transit, remote worksites — all lose access the moment connectivity drops. The people who most need translation in emergencies are often in exactly those settings.
+1. **LLM-centered translation.** Gemma handles the core multimodal work: transcribing speech, reading text in images, and translating extracted or transcribed text. The prompts can explicitly anchor the expected language pair, constrain output language, and separate OCR from translation instead of treating each task as a fixed black-box feature.
 
-2. **Privacy by default is architecturally impossible.** Cloud services transmit spoken words — medical histories, legal statements, personal disclosures, trade secrets — to third-party servers whose handling you must take on faith. "We don't store your audio" is a policy, not a property. There's no way to audit it.
+2. **Field-oriented control.** The app is shaped around real translation workflows: paired conversation when both languages are known, auto-detect when the operator does not know the speaker's language in advance, manual direction when the operator wants to lock the target language, replayable TTS turns, and photo translation for signs, labels, forms, and menus.
 
-3. **Cost barriers compound with every use.** Professional interpretation services charge per-minute fees. Cloud translation APIs charge per-character or per-request. The communities who most need translation — refugees, rural LEP patients, underfunded social services — are systematically the ones least able to afford these recurring costs.
+3. **Inspectable local behavior.** The implementation exposes the prompts, routing heuristics, model-size tradeoffs, memory constraints, and failure modes. That makes the project useful as a Gemma 4 Good prototype: it is not only a translation app, but a concrete test of how far on-device Gemma can carry a practical multimodal translation workflow.
 
-Puente-Multi eliminates all three at once by running the entire pipeline — microphone → transcription → translation → speaker — on a single phone, offline, with no marginal cost per conversation and no server to breach.
+Gemma 4's larger context windows are relevant here, but Puente-Bridge uses them conservatively. Each turn is processed in short, independent conversations to keep E4B stable on-device; the app does not yet maintain a long rolling conversational memory across turns. The expectation is that even within a single turn, Gemma's context capacity and instruction-following can improve transcription, OCR cleanup, and language-locked translation compared with narrower task-specific pipelines. Extending that to true multi-turn context is future work, with memory tradeoffs on mobile hardware.
 
 ---
 
@@ -78,7 +78,7 @@ Puente-Multi eliminates all three at once by running the entire pipeline — mic
 
 Roughly 99% of translation needs occur between two speakers who already know which two languages they're using — a clinic, a parent-teacher conference, a tourist asking for directions. The remaining ~1% are scenarios where the responding party doesn't know in advance what language the other person will speak — and that 1% is heavily concentrated in the highest-stakes contexts (disaster response, refugee intake, hospital triage, border crossings, aid work in linguistically diverse regions).
 
-Puente-Multi addresses both via two operating modes that share a single app, model, and conversation history.
+Puente-Bridge addresses both via two operating modes that share a single app, model, and conversation history.
 
 ### Paired mode (default)
 
@@ -92,14 +92,14 @@ This is the production-grade path: anchoring catches "muy bien" as Spanish rathe
 
 ### Auto-detect mode (toggle, lower-left)
 
-A small Switch labeled "Auto-detect language → English" disables the language pair and re-routes the per-turn flow:
+A small Switch labeled "Auto-detect language" disables the language pair and re-routes the per-turn flow:
 
 1. Gemma transcribes with **no** language hint — just *"Transcribe exactly what was said, in its original language. Use that language's native script."*
 2. The transcribed text is scored by the same deterministic Kotlin language scorer used elsewhere in the app.
 3. If confidence is high, the detected language is parked in the Language B dropdown so toggling auto-detect off yields a ready-to-go conversation pair.
 4. Translation target is the selected app language. The operator gets a usable result without changing the conversation pair first.
 
-Empirical testing during development confirmed the full pipeline works end-to-end for Russian (Cyrillic), Mandarin Chinese (Han), Arabic, French, Spanish, Slovak ("Ahoj, ako sa máš."), Polish ("Cześć, jak się masz?"), and Thai ("สวัสดีครับ ค่ะ สบายดีไหมครับ คะ"). The non-Latin cases (Russian, Chinese, Arabic, Thai) are detected trivially by script; the Latin-script cases (Slovak, Polish, Czech, Hungarian, Romanian, Turkish) — which previously would have been misdetected as Spanish or Portuguese by our hand-rolled scorer due to shared diacritics — are now identified correctly.
+Empirical testing during development confirmed the full pipeline works end-to-end across representative supported languages including Spanish, French, Russian (Cyrillic), Mandarin Chinese (Han), Arabic, Japanese, Korean, and Vietnamese. Non-Latin scripts are detected primarily by script range; Latin-script languages use diacritics and stopword scoring to separate English, Spanish, French, German, Portuguese, Italian, and Vietnamese.
 
 ### Architectural split: paired anchoring vs broad scoring
 
@@ -124,7 +124,7 @@ The dual-mode design lets the right tool fit the right job, and the handoff path
 
 ## Use Cases
 
-The bilingual predecessor (Puente-Bridge) was framed around US healthcare and the EN↔ES language access gap. Puente-Multi's thirteen-way coverage extends the use cases globally:
+Puente-Bridge's thirteen-language coverage supports several practical offline translation scenarios:
 
 ### Humanitarian and Disaster Response (auto-detect mode shines here)
 - Field medics and humanitarian workers communicating with people in crisis zones where infrastructure is down
@@ -143,7 +143,7 @@ The bilingual predecessor (Puente-Bridge) was framed around US healthcare and th
 - Oil/gas, mining, and utility technicians coordinating across language lines offshore or underground
 
 ### Healthcare (Any Country, Any Pair)
-- Clinicians working with patients who speak one of the twelve languages, in settings where an interpreter is not immediately available
+- Clinicians working with patients who speak one of the thirteen supported languages, in settings where an interpreter is not immediately available
 - Community health workers doing home visits in multilingual communities
 - International health organizations deploying in regions with limited infrastructure
 
@@ -196,9 +196,9 @@ The regulations distinguish between communications where machine translation may
 | Supplementing communication while awaiting an interpreter | Surgical or treatment consent |
 | Non-critical administrative communication | Legal notices, appeals, grievance rights |
 
-### How Puente-Multi's design addresses regulatory concerns
+### How Puente-Bridge's design addresses regulatory concerns
 
-Without making any compliance claim for any specific organization or use, Puente-Multi's architecture addresses several concerns the regulations raise:
+Without making any compliance claim for any specific organization or use, Puente-Bridge's architecture addresses several concerns the regulations raise:
 
 - **Privacy (92.201(b)):** All processing is on-device. No patient data, audio, or text is transmitted, recorded, or stored. The app has no `INTERNET` permission declared and cannot reach the network. This eliminates the HIPAA exposure risk that OCR has flagged with consumer-grade cloud machine translation tools.
 - **Free of charge (92.201(b)):** No per-use fees, subscriptions, or internet costs after the model file is downloaded once.
@@ -206,16 +206,12 @@ Without making any compliance claim for any specific organization or use, Puente
 - **Reducing reliance on restricted interpreters (92.201(e)):** Provides an alternative to using unqualified adults or minor children as ad-hoc interpreters — a practice the regulations restrict.
 - **Disaster-response permitted use (92.201(e)(2)(i)):** Enables machine translation as a temporary measure in emergencies involving imminent threat where no qualified interpreter is immediately available — pending subsequent confirmation by a qualified interpreter.
 
-### What Puente-Multi explicitly does NOT do
+### What Puente-Bridge explicitly does NOT do
 
 - **It does not certify itself as a "qualified translator"** under 45 CFR 92.4. It is a machine translation tool by the regulation's own definition.
 - **It does not authorize use for critical communications** where 92.201(c)(3) requires qualified human review. Operators must independently judge what counts as critical in their context.
 - **It does not replace the obligation to provide qualified interpretation services** under any circumstance where the regulations require them.
 - **It does not provide legal cover** to any organization deploying it. Compliance determinations are the responsibility of covered entities and their legal counsel.
-
-The bilingual predecessor (Puente-Bridge, see `WRITEUP.md`) discusses the EN↔ES-specific framing of this same regulatory landscape in greater depth. The thirteen-language extension does not change any of the regulatory analysis — it just expands the linguistic surface area on which the same principles apply.
-
----
 
 ## Technical Architecture
 
@@ -274,7 +270,7 @@ Speaker
 - **Language-specific diacritics** (4 points per char) for the Latin-script group. `ñ/¿/¡` for Spanish, `ß/ä/ö/ü` for German, `ã/õ/ç` for Portuguese, `ç/œ/àâêî` for French, `àèéìòù` for Italian.
 - **Stopwords** (2 points per match). `el/la/los` for Spanish, `der/die/das` for German, `le/la/les` for French, `o/a/os/as` for Portuguese, `il/lo/gli` for Italian, plain English function words for English.
 
-The candidate pair (the two dropdown selections) is scored and the higher-scoring language wins. Because the comparison is always binary (A vs B, not twelve-way), the heuristic only has to distinguish the two specific languages the user actually configured — a much easier problem than open-set identification.
+The candidate pair (the two dropdown selections) is scored and the higher-scoring language wins. Because the comparison is always binary (A vs B, not thirteen-way), the heuristic only has to distinguish the two specific languages the user actually configured — a much easier problem than broad language identification.
 
 **Audio encoder is anchored via the prompt.** Gemma is told in the transcribe prompt that the audio is one of the two selected languages. This pre-biases the audio encoder toward the right phoneme set and noticeably improves transcription quality for non-English audio — raw "transcribe this" prompts tend to force foreign phonemes into English-shaped tokens (`"muy bien"` → `"we're being"`) under the model's English training bias.
 
@@ -286,7 +282,7 @@ The candidate pair (the two dropdown selections) is scored and the higher-scorin
 
 **Translation prompt has a hard language-lock.** Gemma 4 (especially E2B) has a documented tendency to drop foreign-language tokens into otherwise-correct output (we observed Russian `иначе` appearing mid-Spanish output, Hindi Devanagari mid-English). The translate prompt explicitly states "respond in `<target>` ONLY; every word must be a valid `<target>` word; do not mix in words, characters, or scripts from any other language" and includes a one-shot example demonstrating the expected purity.
 
-**Shared model directory across app variants.** The bilingual (Puente-Bridge) and multilingual (Puente-Multi) apps are separate `applicationId`s but share a single copy of the multi-GB Gemma weights stored at `/sdcard/Download/litertlm-models/`. This required `MANAGE_EXTERNAL_STORAGE` permission and a first-run "grant access" screen — because Android's sandbox prevents app A from reading app B's `Android/data/` directory even with that permission, so the models have to live outside any app-private sandbox.
+**Shared external model directory.** The app loads the multi-GB Gemma weights from `/sdcard/Download/litertlm-models/` rather than bundling them into the APK. This required `MANAGE_EXTERNAL_STORAGE` permission and a first-run "grant access" screen. Keeping the models outside app-private storage makes hackathon provisioning practical and avoids duplicating large model files across rebuilds or local test installs.
 
 ### Photo Translation Pipeline
 
@@ -313,8 +309,8 @@ Language identification
    ▼
 Gemma 4 text translation
    │  OCR text → target-language translation, fully on-device.
-   │  Skipped entirely when detected source == target (English menu in an
-   │  English operator's paired mode shows OCR text unchanged).
+   │  Skipped entirely when detected source == target (a menu already in the
+   │  operator's app language shows OCR text unchanged).
    │
    ▼
 Conversation bubble (thumbnail preview + native-script text + translation)
@@ -342,13 +338,12 @@ The one remaining manual step is the Gemma model itself. The `.litertlm` file is
 
 A Settings toggle exposes a second voice pipeline: **Gemma 4 AST** (audio-to-translated-text in a single inference). Compared to the default transcribe→translate path it cuts one full Gemma decode per turn — roughly 2× faster wall-clock — at the cost of not producing an intermediate transcription.
 
-The wrinkle direct mode introduces is direction selection. With a fixed-target AST call, the model needs to know up front which language to translate *into*; we can't infer it from a transcription that doesn't exist. We tried two approaches before settling on the third:
+The wrinkle direct mode introduces is direction selection. With a fixed-target AST call, the model performs best when it knows up front which language to translate *into*. Puente-Bridge supports two operator choices:
 
-1. **Internal LID** — prompt Gemma to decide which of A or B was spoken and translate to the other, returning a `LANG: xx` header so we can pick the TTS locale. Worked unreliably on E2B (small models collapse "translate-to-the-other" into a plain transcription) and was inconsistent on E4B.
-2. **Auto-alternation** — flip target A↔B each turn under the assumption that conversation alternates. Brittle when a single speaker takes multiple consecutive turns.
-3. **Direction-explicit dual mic** — what shipped. In paired+direct mode the single mic is replaced by two direction-specific mics flanking the row edges (`EN→ES` left, `ES→EN` right). The speaker presses the side that matches the direction they're about to speak; the AST call goes through with a known fixed target. One inference per press, no LID guesswork, and the physical-layout cue (each speaker has "their" button on their side of the phone) makes the interpretation cadence obvious without instruction.
+1. **One-mic paired direct mode by default.** The default direct-mode UI stays consistent with paired transcription mode: one central mic, one turn at a time, with the app routing the turn across the selected pair. This keeps the common conversation flow simple.
+2. **Manual direction when Auto-detect is off.** If the operator enables Manual direction, the one-mic control becomes two target-specific buttons. This locks the target language per turn and can improve accuracy when it is clear which direction the next utterance should go.
 
-Auto-detect + direct mode keeps the single mic — auto already targets English regardless of source, so direction is unambiguous.
+Auto-detect + direct mode keeps the single mic because auto already targets the selected app language regardless of source, so direction is unambiguous.
 
 ---
 
@@ -373,11 +368,11 @@ This means a Spanish-speaking aid worker, a Vietnamese clinician, or a Russian f
 
 ## Gemma 4 Model Usage
 
-Puente-Multi leverages three distinct capabilities of the Gemma 4 architecture:
+Puente-Bridge leverages three distinct capabilities of the Gemma 4 architecture:
 
-1. **Multimodal audio understanding.** The model processes raw 16 kHz PCM audio directly via `Content.AudioBytes`, eliminating the need for a separate ASR pipeline. One model handles both speech recognition and translation across all twelve languages.
+1. **Multimodal audio understanding.** The model processes raw 16 kHz PCM audio directly via `Content.AudioBytes`, eliminating the need for a separate ASR pipeline. One model handles both speech recognition and translation across all thirteen supported languages.
 
-2. **Broad multilingual coverage.** All twelve languages in the supported set are well-represented in Gemma 4's training data — quality drops significantly for lower-resource languages but remains high across our chosen set.
+2. **Broad multilingual coverage.** All thirteen languages in the supported set are well-represented in Gemma 4's training data — quality drops significantly for lower-resource languages but remains high across our chosen set.
 
 3. **Conversation API with independent contexts.** Each turn uses two fresh Conversations with independent KV caches. This both enforces memory hygiene (the audio-token context doesn't bleed into the translate step) and keeps each sub-task's attention focused on its specific job.
 
@@ -447,13 +442,13 @@ Cloud translation services handle these languages already — that's not the gap
 - Function in a country whose government blocks or monitors cloud translation services
 - Operate under data sovereignty requirements that prohibit sending audio to overseas servers
 
-Puente-Multi does all of these because the entire pipeline — from microphone to speaker — runs on a single phone, with weights loaded from local storage and inference running on the Tensor G5 NPU.
+Puente-Bridge does all of these because the entire pipeline — from microphone to speaker — runs on a single phone, with weights loaded from local storage and inference running on the Tensor G5 NPU.
 
 ---
 
 ## Limitations and Responsible Use
 
-Puente-Multi is an AI translation tool. It will make mistakes, and it leaves significant portions of humanity uncovered. Honest scope-bounding:
+Puente-Bridge is an AI translation tool. It will make mistakes, and it leaves significant portions of humanity uncovered. Honest scope-bounding:
 
 ### Quality limitations within the supported set
 
@@ -461,7 +456,7 @@ Translation quality is not uniform across the thirteen languages, but it's impor
 
 With that caveat, rough expectations:
 
-- **Strongest quality is expected for English and Spanish** — the pair the bilingual predecessor was optimized for and the two languages with the most training-data exposure in public multilingual corpora.
+- **Strongest quality is expected for English and Spanish** — both have strong representation in public multilingual corpora and are common anchor languages in translation data.
 - **Good-to-usable quality is expected for the other major European languages** (French, German, Portuguese, Italian) and Mandarin Chinese (Simplified), all of which have substantial multilingual training coverage.
 - **Weaker output is expected for Hindi and Vietnamese**, which are typically lower-resource in multilingual LLM training data even among major world languages. Translations will generally convey meaning but may read more mechanically and miss idiomatic register.
 - **Japanese, Korean, Russian, and Arabic fall somewhere in the middle.** Well-represented in training but with structural features (honorific systems, noun declension, Arabic diglossia) that smaller multilingual models historically handle less gracefully. Expect "accurate but stiff" rather than "native-sounding."
@@ -529,13 +524,13 @@ The `Language` enum is the single source of truth for the supported set. Adding 
 - **Target**: Android API 26+, optimized for Pixel 10 Pro (Tensor G5)
 - **Min hardware**: Any arm64 Android device with ~4 GB free external storage and a compatible GPU driver
 
-The codebase comprises two Gradle modules: `:app` (bilingual EN↔ES, the original Puente-Bridge) and `:app-multi` (this twelve-language generalization). Both can be installed side-by-side on one device; they share the same `.litertlm` model files via a shared external-storage directory to avoid duplicating multi-GB weights.
+The hackathon app lives in the `:app-multi` Gradle module. The repository intentionally contains the submitted Puente-Bridge app only; legacy prototype modules and older writeups were removed to keep the public submission focused.
 
 ---
 
-## Why "Puente-Multi"
+## Why "Puente-Bridge"
 
-*Puente* is Spanish for "bridge" — the name of the original bilingual predecessor. This version extends that bridge across twelve languages. It is a single small bridge spanning most of humanity's linguistic distance, running on a device that fits in a pocket, with no cloud underneath it.
+*Puente* is Spanish for "bridge." The name fits the goal: a practical bridge across language barriers, spanning thirteen high-impact languages on a device that fits in a pocket, with no cloud underneath it.
 
 ---
 
@@ -558,9 +553,9 @@ The codebase comprises two Gradle modules: `:app` (bilingual EN↔ES, the origin
 
 ## Repository
 
-**Source Code**: [github.com/your-repo/pixel-ai-translator](https://github.com/your-repo/pixel-ai-translator)
+**Source Code**: [github.com/imcgr001/Puente-Bridge](https://github.com/imcgr001/Puente-Bridge)
 
-Both `:app` (bilingual) and `:app-multi` (thirteen-language) modules in the same repository, sharing build infrastructure and model storage.
+The submitted Android app is in the `:app-multi` module.
 
 **License**: Apache 2.0
 

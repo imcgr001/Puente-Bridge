@@ -15,5 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "PixelAITranslator"
-include(":app")
 include(":app-multi")
