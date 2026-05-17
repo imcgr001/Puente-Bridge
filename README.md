@@ -88,7 +88,7 @@ After the Gemma model files are provisioned on-device, inference runs offline.
 ## Project Structure
 
 - `app-multi/`: Puente-Bridge hackathon app.
-- `WRITEUP_MULTILINGUAL.md`: longer project write-up for submission/storytelling.
+- [`WRITEUP.md`](WRITEUP.md): longer project write-up for submission/storytelling.
 - [`ENGINEERING_CHALLENGES.md`](ENGINEERING_CHALLENGES.md): implementation notes and postmortems.
 
 ## Requirements
@@ -199,7 +199,7 @@ Puente-Bridge does not replace qualified human interpreters where law, policy, o
 Recommended public submission package:
 
 - This repository.
-- `WRITEUP_MULTILINGUAL.md` as the longer technical/project write-up.
+- [`WRITEUP.md`](WRITEUP.md) as the longer technical/project write-up.
 - Demo video showing offline speech translation, Manual direction, Auto-detect, Direct translation, and photo translation.
 - APK release artifact or clear build instructions.
 - Screenshots/cover image for the Kaggle project page.
