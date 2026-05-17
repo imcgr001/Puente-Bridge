@@ -435,7 +435,11 @@ The app is designed to support translation between any two selected languages in
 
 Offline translation already exists in major consumer tools. Puente-Bridge is not built on the claim that offline translation is unavailable; it explores a different architecture: a local multimodal LLM handling speech transcription, photo OCR, translation, and routing inside one inspectable app.
 
-That matters because it can:
+Unlike many offline translation workflows that require downloading specific language packs ahead of time, Puente-Bridge provisions one local Gemma model for all thirteen supported languages. Once the model is on-device, every supported pair is available without choosing or downloading additional per-language packs.
+
+This matters in field settings where the operator may not know who will walk in next. Auto-detect mode scores Gemma's transcription across the curated supported set and translates into the selected app language, while paired mode uses the selected two-language constraint for better reliability in normal back-and-forth conversation.
+
+The resulting system can:
 
 - Run the full demo pipeline locally after model provisioning: speech input, transcription, translation, photo OCR, and TTS output.
 - Avoid transmitting conversation audio, photos, or translated text to a remote service during use.
