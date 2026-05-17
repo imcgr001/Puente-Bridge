@@ -89,7 +89,7 @@ After the Gemma model files are provisioned on-device, inference runs offline.
 
 - `app-multi/`: Puente-Bridge hackathon app.
 - `WRITEUP_MULTILINGUAL.md`: longer project write-up for submission/storytelling.
-- `ENGINEERING_CHALLENGES.md`: implementation notes and postmortems.
+- [`ENGINEERING_CHALLENGES.md`](ENGINEERING_CHALLENGES.md): implementation notes and postmortems.
 
 ## Requirements
 
@@ -179,7 +179,7 @@ E4B is large enough that native memory management matters on Android. The app in
 - CPU vision backend for E4B.
 - Adaptive photo downsampling before Gemma OCR.
 
-These changes are documented in `ENGINEERING_CHALLENGES.md`.
+These changes are documented in [`ENGINEERING_CHALLENGES.md`](ENGINEERING_CHALLENGES.md).
 
 ## Limitations
 
