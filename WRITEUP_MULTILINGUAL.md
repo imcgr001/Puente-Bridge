@@ -418,7 +418,7 @@ Summing the speaker counts (L1 + L2) of the thirteen supported languages gives r
 | Korean | ~80 M |
 | Italian | ~65 M |
 
-Any conversation between any two speakers of these languages is translatable on a single phone, offline, at zero marginal cost.
+The app is designed to support translation between any two selected languages in this set on a single phone, offline after model provisioning, with no per-conversation cost.
 
 ### Who This Helps
 
@@ -431,18 +431,18 @@ Any conversation between any two speakers of these languages is translatable on 
 - **Journalists, researchers, and interviewers** conducting conversations where cloud transmission of the audio would be inappropriate or dangerous
 - **Anyone who simply doesn't want their conversation uploaded to somebody else's server**
 
-### What Makes On-Device Different at Scale
+### What Gemma On-Device Translation Adds
 
-Cloud translation services handle these languages already — that's not the gap. What they cannot do:
+Offline translation already exists in major consumer tools. Puente-Bridge is not built on the claim that offline translation is unavailable; it explores a different architecture: a local multimodal LLM handling speech transcription, photo OCR, translation, and routing inside one inspectable app.
 
-- Work in a disaster zone with no connectivity
-- Work on an airplane, in a basement, in a rural area with no cell signal, in a correctional facility, in a secure government building
-- Guarantee that a sensitive conversation is not transmitted to any third party
-- Operate at zero marginal cost per conversation
-- Function in a country whose government blocks or monitors cloud translation services
-- Operate under data sovereignty requirements that prohibit sending audio to overseas servers
+That matters because it can:
 
-Puente-Bridge does all of these because the entire pipeline — from microphone to speaker — runs on a single phone, with weights loaded from local storage and inference running on the Tensor G5 NPU.
+- Run the full demo pipeline locally after model provisioning: speech input, transcription, translation, photo OCR, and TTS output.
+- Avoid transmitting conversation audio, photos, or translated text to a remote service during use.
+- Avoid per-request or per-character API costs once deployed on a device.
+- Expose the prompts, routing heuristics, model choices, memory constraints, and failure modes for inspection and adaptation.
+- Support field workflows that are awkward in many consumer translators: paired conversation mode, manual direction, replayable turns, direct speech translation, and Gemma-based photo translation.
+- Continue operating in low-connectivity or no-connectivity settings, assuming the Gemma model files and Android TTS voices are already installed.
 
 ---
 
@@ -560,5 +560,3 @@ The submitted Android app is in the `:app-multi` module.
 **License**: Apache 2.0
 
 ---
-
-*Built with Gemma 4 on Pixel 10 Pro. Thirteen languages. Four billion speakers. No cloud. No recording. No barriers.*
