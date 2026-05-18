@@ -13,6 +13,8 @@
 *.ap_
 *.aab
 *.mp4
+/gui.png
+/thumbnail.png
 
 # Large model files — download separately, don't commit
 *.litertlm
